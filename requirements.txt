@@ -1,1 +1,7 @@
 # Acá van las librerias
+
+streamlit>=1.36.0
+pandas>=2.2.0
+numpy>=1.26.0
+altair>=5.2.0
+
