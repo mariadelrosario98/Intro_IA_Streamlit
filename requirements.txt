@@ -1,9 +1,7 @@
 # Acá van las librerias
 
-streamlit>=1.36,<2
-pandas>=2.2,<3
-numpy>=1.26,<3
-altair>=5.2,<6
-pydeck>=0.8,<1
-
-
+streamlit
+pandas
+numpy
+altair
+pydeck
