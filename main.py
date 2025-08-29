@@ -463,14 +463,20 @@ with cC:
 # =========================
 # 🤖 Agente de preguntas de agricultura (beta)
 # =========================
+# 🤖 Agente de preguntas de agricultura (beta, mejorado)
+# =========================
+import re, unicodedata
+
 st.divider()
 st.subheader("🤖 Agente de preguntas agrícolas (beta)")
 
 # --- Preferencias del agente
 col_ag1, col_ag2 = st.columns([2, 3])
 with col_ag1:
-    usar_filtros = st.toggle("Usar datos filtrados (df_f)", value=True,
-                             help="Si está activo, el agente responde con base en el subconjunto filtrado por tus controles de arriba.")
+    usar_filtros = st.toggle(
+        "Usar datos filtrados (df_f)", value=True,
+        help="Si está activo, el agente responde con base en el subconjunto filtrado por tus controles de arriba."
+    )
 with col_ag2:
     modo_detalle = st.radio("Nivel de detalle de respuesta", ["Resumido", "Completo"], horizontal=True)
 
@@ -478,10 +484,18 @@ DATA_ACTUAL = df_f if usar_filtros else df
 REGIONES = sorted(DATA_ACTUAL["region"].unique().tolist())
 CULTIVOS = sorted(DATA_ACTUAL["cultivo"].unique().tolist())
 
+# ---------- Helpers ----------
+def _normalize(s: str) -> str:
+    """Minúsculas + sin tildes + espacios compactos."""
+    s = s.lower()
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    return " ".join(s.split())
+
 def _extract_entities(q: str):
-    ql = q.lower()
-    region = next((r for r in REGIONES if r.lower() in ql), None)
-    cultivo = next((c for c in CULTIVOS if c.lower() in ql), None)
+    qn = _normalize(q)
+    region = next((r for r in REGIONES if _normalize(r) in qn), None)
+    cultivo = next((c for c in CULTIVOS if _normalize(c) in qn), None)
     return region, cultivo
 
 def _subset(data: pd.DataFrame, region: str | None, cultivo: str | None) -> pd.DataFrame:
@@ -495,27 +509,22 @@ def _subset(data: pd.DataFrame, region: str | None, cultivo: str | None) -> pd.D
 def _advice_block(d: pd.DataFrame) -> list[str]:
     """Heurísticas simples (ilustrativas) para recomendaciones."""
     tips = []
-    if d.empty:
-        return tips
-
+    if d.empty: return tips
     ndvi_m = float(d["ndvi"].mean())
     llv_m = float(d["lluvia_mm"].mean())
     rto_m = float(d["rendimiento_t_ha"].mean())
-
-    # Señales básicas (ajusta umbrales si lo deseas)
     if ndvi_m < 0.45:
-        tips.append("NDVI bajo: revisar **estrés hídrico/nutricional** y cobertura vegetal; evaluar malezas o plagas.")
+        tips.append("NDVI bajo → revisar **estrés hídrico/nutricional**, malezas y plagas.")
     elif ndvi_m > 0.75:
-        tips.append("NDVI alto: buen vigor; mantener **manejo fitosanitario** y monitoreo de **exceso de humedad**.")
+        tips.append("NDVI alto → buen vigor; mantener **fitosanitario** y vigilar **exceso de humedad**.")
     if llv_m < 80:
-        tips.append("Lluvia baja: considerar **riego suplementario** o conservación de humedad (mulch, coberturas).")
+        tips.append("Lluvia baja → considerar **riego suplementario** / conservación de humedad.")
     elif llv_m > 220:
-        tips.append("Lluvia elevada: reforzar **drenajes**, vigilar **enfermedades fungosas** y **lixiviación** de nutrientes.")
+        tips.append("Lluvia alta → reforzar **drenajes** y vigilar **enfermedades fungosas**.")
     if rto_m < 0.8 and "Café" in d["cultivo"].unique():
-        tips.append("Rendimiento cafetalero bajo: revisar **densidad de siembra**, poda y **nutrición N-P-K + Ca/Mg**.")
+        tips.append("Café con bajo rendimiento → revisar **densidad, poda y nutrición N-P-K + Ca/Mg**.")
     if "Papa" in d["cultivo"].unique() and llv_m > 180:
-        tips.append("Papa con alta lluvia: vigilar **tizón tardío**; fortalecer **cobertura y drenaje**.")
-
+        tips.append("Papa con alta lluvia → vigilar **tizón tardío** y mejorar **drenaje**.")
     return tips
 
 def _describe_scope(region, cultivo, usar_filtros):
@@ -530,173 +539,81 @@ def _render_table(df_show: pd.DataFrame, cols: list[str], height=260):
 
 def _trend_chart(d: pd.DataFrame, y_col: str, title: str):
     if d.empty:
-        st.info("No hay datos para graficar.")
-        return
-    serie = (
-        d.groupby(["fecha"], as_index=False)[y_col]
-        .mean()
-        .rename(columns={y_col: "valor"})
-    )
+        st.info("No hay datos para graficar."); return
+    serie = d.groupby(["fecha"], as_index=False)[y_col].mean().rename(columns={y_col: "valor"})
     chart = (
-        alt.Chart(serie)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("fecha:T", title="Fecha"),
-            y=alt.Y("valor:Q", title=title),
-            tooltip=[alt.Tooltip("fecha:T"), alt.Tooltip("valor:Q", format=",.2f")]
-        )
-        .properties(height=280)
-        .interactive()
+        alt.Chart(serie).mark_line(point=True)
+        .encode(x=alt.X("fecha:T", title="Fecha"),
+                y=alt.Y("valor:Q", title=title),
+                tooltip=[alt.Tooltip("fecha:T"), alt.Tooltip("valor:Q", format=",.2f")])
+        .properties(height=280).interactive()
     )
     st.altair_chart(chart, use_container_width=True)
 
 def _bar_chart(d: pd.DataFrame, group_col: str, y_col: str, title: str):
     if d.empty:
-        st.info("No hay datos para graficar.")
-        return
+        st.info("No hay datos para graficar."); return
     g = d.groupby(group_col, as_index=False)[y_col].mean().rename(columns={y_col: "valor"})
     ch = (
-        alt.Chart(g)
-        .mark_bar()
-        .encode(
-            x=alt.X("valor:Q", title=title),
-            y=alt.Y(f"{group_col}:N", sort="-x", title=group_col.capitalize()),
-            tooltip=[alt.Tooltip(f"{group_col}:N"), alt.Tooltip("valor:Q", format=",.2f")]
-        )
-        .properties(height=320)
-        .interactive()
+        alt.Chart(g).mark_bar()
+        .encode(x=alt.X("valor:Q", title=title),
+                y=alt.Y(f"{group_col}:N", sort="-x", title=group_col.capitalize()),
+                tooltip=[alt.Tooltip(f"{group_col}:N"), alt.Tooltip("valor:Q", format=",.2f")])
+        .properties(height=320).interactive()
     )
     st.altair_chart(ch, use_container_width=True)
 
-def answer_question(q: str, data: pd.DataFrame):
-    """Devuelve (texto_respuesta, df_opcional, extra) donde:
-       - extra == 'tabla' para tablas
-       - extra == ('barra', group_col, y_col) para barras
-       - extra == ('tendencia', y_col) para series temporales
-    """
-    ql = q.lower()
-    region, cultivo = _extract_entities(q)
-    d = _subset(data, region, cultivo)
+def _needs_cols(cols: list[str], data: pd.DataFrame) -> list[str]:
+    return [c for c in cols if c not in data.columns]
 
-    if d.empty:
-        return ("No encontré datos que coincidan con tu consulta. Ajusta filtros/región/cultivo e inténtalo de nuevo.", None, None)
-
-    # --- Top N por rendimiento
-    if ("top" in ql) or ("mejores" in ql):
-        n = 10
-        m = re.search(r"top\s*(\d+)", ql) or re.search(r"top(\d+)", ql)
-        if m:
-            try:
-                n = max(1, min(100, int(m.group(1))))
-            except:
-                pass
-        top = d.sort_values("rendimiento_t_ha", ascending=False).head(n)
-        text = f"Top {len(top)} fincas por **rendimiento (t/ha)** · {_describe_scope(region, cultivo, usar_filtros)}"
-        return (text, top[["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"]], "tabla")
-
-    # --- Estadística de rendimiento
-    if ("rend" in ql) or ("productividad" in ql):
-        text = f"Resumen de **rendimiento (t/ha)** · {_describe_scope(region, cultivo, usar_filtros)}"
-        if ("por región" in ql) or ("por region" in ql):
-            return (text, d, ("barra","region","rendimiento_t_ha"))
-        if ("por cultivo" in ql):
-            return (text, d, ("barra","cultivo","rendimiento_t_ha"))
-        if ("tendencia" in ql) or ("serie" in ql):
-            return (text, d, ("tendencia","rendimiento_t_ha"))
-        stats = d["rendimiento_t_ha"].describe()[["count","mean","std","min","max"]]
-        text += f"\n- n={int(stats['count'])} · media={stats['mean']:.2f} · σ={stats['std']:.2f} · min={stats['min']:.2f} · max={stats['max']:.2f}"
-        return (text, None, None)
-
-    # --- Lluvia
-    if ("lluvia" in ql) or ("precipitaci" in ql):
-        text = f"**Lluvia (mm)** · {_describe_scope(region, cultivo, usar_filtros)}"
-        if ("por región" in ql) or ("por region" in ql):
-            return (text, d, ("barra","region","lluvia_mm"))
-        if ("por cultivo" in ql):
-            return (text, d, ("barra","cultivo","lluvia_mm"))
-        if ("tendencia" in ql) or ("serie" in ql):
-            return (text, d, ("tendencia","lluvia_mm"))
-        stats = d["lluvia_mm"].describe()[["count","mean","std","min","max"]]
-        text += f"\n- n={int(stats['count'])} · media={stats['mean']:.1f} · σ={stats['std']:.1f} · min={stats['min']:.1f} · max={stats['max']:.1f}"
-        return (text, None, None)
-
-    # --- NDVI
-    if ("ndvi" in ql) or ("vigor" in ql):
-        text = f"**NDVI** · {_describe_scope(region, cultivo, usar_filtros)}"
-        if ("por región" in ql) or ("por region" in ql):
-            return (text, d, ("barra","region","ndvi"))
-        if ("por cultivo" in ql):
-            return (text, d, ("barra","cultivo","ndvi"))
-        if ("tendencia" in ql) or ("serie" in ql):
-            return (text, d, ("tendencia","ndvi"))
-        stats = d["ndvi"].describe()[["count","mean","std","min","max"]]
-        text += f"\n- n={int(stats['count'])} · media={stats['mean']:.3f} · σ={stats['std']:.3f} · min={stats['min']:.3f} · max={stats['max']:.3f}"
-        return (text, None, None)
-
-    # --- Comparativos rápidos con pregunta
-    if ("¿" in q) or ("?" in q) or ("cual" in ql) or ("cuál" in ql) or ("mejor" in ql):
-        if region and not cultivo:
-            text = f"Comparativo de **rendimiento** por cultivo en **{region}**"
-            return (text, d, ("barra","cultivo","rendimiento_t_ha"))
-        if cultivo and not region:
-            text = f"Comparativo de **rendimiento** por región para **{cultivo}**"
-            return (text, d, ("barra","region","rendimiento_t_ha"))
-
-    # --- Recomendaciones básicas
-    if ("recom" in ql) or ("suger" in ql) or ("consejo" in ql):
-        tips = _advice_block(d)
-        if tips:
-            txt = f"Recomendaciones (heurísticas) · {_describe_scope(region, cultivo, usar_filtros)}\n- " + "\n- ".join(tips)
-        else:
-            txt = "Sin señales claras para recomendar con esta muestra."
+# ---------- Respuestas de conocimiento (sin gráficos) ----------
+def _knowledge_answer(q: str, region: str | None, cultivo: str | None, data: pd.DataFrame):
+    qn = _normalize(q)
+    # fertilizante / abono
+    if re.search(r"\b(fertiliz|abono)\b", qn):
+        crop = cultivo or "el cultivo"
+        missing = _needs_cols(["fertilizante", "dosis_kg_ha"], data)
+        nota_cols = ""
+        if missing:
+            nota_cols = f"\n\n> Para responder con datos propios necesitaríamos columnas como: {', '.join(missing)}."
+        txt = (
+            f"**No existe un ‘mejor fertilizante’ universal para {crop}.** "
+            "La recomendación depende del **análisis de suelo** (pH, MO, P, K, Ca/Mg, CICE), edad del cultivo y objetivo de producción.\n\n"
+            "En **café**, de forma general:\n"
+            "- Se usa un esquema **NPK** con énfasis en **N** y **K**; el **P** se ajusta según suelo.\n"
+            "- Fraccionar la aplicación en 3–4 eventos/año; complementar con **Ca/Mg** si el análisis lo indica.\n"
+            "- Incorporar **materia orgánica** y manejo de **pH** (enmiendas) cuando aplique.\n\n"
+            "👉 Paso práctico: realiza o consulta un análisis de suelo reciente y calcule la dosis objetivo con tablas locales (Cenicafé/extensionismo)."
+            + nota_cols
+        )
         return (txt, None, None)
 
-    # --- Fallback
-    base = f"Esto es lo que puedo decir con los datos · {_describe_scope(region, cultivo, usar_filtros)}"
-    tips = _advice_block(d)
-    if modo_detalle == "Completo":
-        base += f"\n- Observaciones: {len(d)}"
-        base += f"\n- Rend. medio: {d['rendimiento_t_ha'].mean():.2f} t/ha · NDVI medio: {d['ndvi'].mean():.3f} · Lluvia media: {d['lluvia_mm'].mean():.1f} mm"
-    if tips:
-        base += "\n\nSugerencias:\n- " + "\n- ".join(tips)
-    return (base, None, None)
+    # plagas/enfermedades (IPM)
+    if re.search(r"\b(roya|broca|plaga|enfermedad|mancha|hongo)\b", qn):
+        crop = cultivo or "el cultivo"
+        txt = (
+            f"**Manejo integrado de plagas/enfermedades en {crop} (enfoque general):**\n"
+            "- **Monitoreo** periódico (trampas/inspección) y umbrales de intervención.\n"
+            "- **Culturales**: podas sanitarias, manejo de sombra, ventilación, nutrición balanceada.\n"
+            "- **Biológico**: uso de controladores biológicos donde aplique.\n"
+            "- **Químico**: solo si supera umbral; rotar modos de acción y respetar periodos de carencia.\n"
+            "Si tienes fechas de incidencia/parcelas, puedo graficar tendencias por lote."
+        )
+        return (txt, None, None)
 
-# --- Historial de chat
-if "agro_chat" not in st.session_state:
-    st.session_state.agro_chat = []
+    # riego / agua
+    if re.search(r"\b(riego|lamina|evapotranspiracion|et0)\b", qn):
+        txt = (
+            "**Riego (orientación general):** calcule la lámina ≈ ETc = ET₀ × Kc, "
+            "ajuste por eficiencia del sistema y fraccione según textura/salinidad. "
+            "Con columnas como `et0_mm`, `kc`, `riego_mm` puedo estimar déficits y sugerir ventanas de riego."
+        )
+        return (txt, None, None)
 
-for role, content in st.session_state.agro_chat:
-    with st.chat_message(role):
-        st.markdown(content)
+    # suelos / pH / MO
+    if re.search(r"\b(suelo|ph|materia organica|m o|m\.o\.)\b", qn):
+        txt = (
+            "**Suelos:** mantener pH objetivo del cultivo (en café ~5.2–5.8, referencia general), "
+            "aplicar enmiendas (cal/dolomita/yeso) según saturación de bases y Al. "
+            "La **MO** mej
 
-# --- Entrada del usuario
-prompt = st.chat_input("Haz una pregunta (ej.: 'Top 5 por rendimiento en Antioquia', 'Tendencia de NDVI para Café', 'lluvia por región', 'recomendaciones en Tolima').")
-if prompt:
-    st.session_state.agro_chat.append(("user", prompt))
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    texto, payload, extra = answer_question(prompt, DATA_ACTUAL)
-
-    with st.chat_message("assistant"):
-        st.markdown(texto)
-
-        # Render según tipo de respuesta
-        if extra is None:
-            if isinstance(payload, pd.DataFrame):
-                _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
-        elif isinstance(extra, str) and extra == "tabla":
-            if isinstance(payload, pd.DataFrame) and not payload.empty:
-                _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
-            else:
-                st.info("No hay filas para mostrar.")
-        elif isinstance(extra, tuple):
-            if extra[0] == "barra":
-                _, group_col, y_col = extra
-                _bar_chart(payload, group_col, y_col, title=y_col.replace("_", " ").upper())
-            elif extra[0] == "tendencia":
-                _, y_col = extra
-                _trend_chart(payload, y_col, title=y_col.replace("_", " ").upper())
-
-    # Guardar la respuesta en el historial
-    st.session_state.agro_chat.append(("assistant", texto))
