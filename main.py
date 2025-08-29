@@ -11,7 +11,7 @@ import re
 # Configuración de página
 # =========================
 st.set_page_config(page_title="Agricultura: EDA interactivo", page_icon="🌾", layout="wide")
-st.title("🌾 Agricultura — EDA interactivo con datos aleatorios")
+st.title("🌾 Agricultura — EDA interactivo")
 st.caption("500 observaciones • 10 columnas • Controles interactivos, gráficos y mapa")
 
 # =========================
