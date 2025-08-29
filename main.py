@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import altair as alt
 import pydeck as pdk
+import re
 
 # =========================
 # Configuración de página
@@ -23,7 +24,7 @@ st.sidebar.write(f"Observaciones: **{n_obs}** (fijas)")
 st.sidebar.divider()
 
 # =========================
-# Generación del dataset
+# Generación del dataset sintético
 # =========================
 # 10 columnas: fecha, finca_id, cultivo, region, lat, lon, area_ha, rendimiento_t_ha, lluvia_mm, ndvi
 @st.cache_data(show_spinner=False)
@@ -91,7 +92,6 @@ df = generar_datos_agro(seed, n_obs)
 # =========================
 # Carga de CSV (opcional) — Reemplaza el dataset sintético
 # =========================
-
 st.subheader("📤 Cargar CSV (opcional)")
 with st.expander("Usar mis propios datos (en lugar de los aleatorios)", expanded=False):
     fuente_cols = {
@@ -159,13 +159,11 @@ with st.expander("Usar mis propios datos (en lugar de los aleatorios)", expanded
                         )
 
             if st.button("✅ Usar este CSV en el EDA"):
-                # Validar selección
                 sel = {k: v for k, v in widgets.items() if v != "—"}
-                missing = [k for k in required if k not in sel]
                 if len(sel) < len(required):
-                    st.warning(f"Faltan columnas por mapear: {', '.join([m for m in required if m not in sel])}")
+                    faltan = [k for k in required if k not in sel]
+                    st.warning(f"Faltan columnas por mapear: {', '.join(faltan)}")
                 else:
-                    # Construir DF canónico con nombres esperados
                     df_user = pd.DataFrame({
                         "fecha": df_csv[sel["fecha"]],
                         "finca_id": df_csv[sel["finca_id"]],
@@ -180,23 +178,18 @@ with st.expander("Usar mis propios datos (en lugar de los aleatorios)", expanded
                     }).copy()
 
                     # Coerciones y limpieza ligera
-                    # fecha
                     df_user["fecha"] = pd.to_datetime(df_user["fecha"], errors="coerce")
-                    # numéricos
                     for c in ["lat", "lon", "area_ha", "rendimiento_t_ha", "lluvia_mm", "ndvi"]:
                         df_user[c] = pd.to_numeric(df_user[c], errors="coerce")
 
-                    # drops de NaN críticos
                     before = len(df_user)
                     df_user = df_user.dropna(subset=["fecha", "lat", "lon"]).reset_index(drop=True)
                     dropped = before - len(df_user)
 
-                    # tipados finales
                     df_user["finca_id"] = df_user["finca_id"].astype(str)
                     df_user["cultivo"] = df_user["cultivo"].astype(str)
                     df_user["region"]  = df_user["region"].astype(str)
 
-                    # orden y ordenamiento
                     df_user = df_user[[
                         "fecha", "finca_id", "cultivo", "region", "lat", "lon",
                         "area_ha", "rendimiento_t_ha", "lluvia_mm", "ndvi"
@@ -208,7 +201,6 @@ with st.expander("Usar mis propios datos (en lugar de los aleatorios)", expanded
                     # Reemplazar dataset base
                     df = df_user
                     st.success("✅ ¡Listo! Ahora el EDA usa **tu CSV**. Ajusta los filtros de arriba para explorar.")
-
 
 # =========================
 # Filtros interactivos
@@ -383,7 +375,7 @@ else:
 st.divider()
 
 # =========================
-# Mapa (pydeck) — CORREGIDO
+# Mapa (pydeck)
 # =========================
 st.subheader("🗺️ Mapa de fincas")
 col_map1, col_map2, col_map3 = st.columns([1, 1, 2])
@@ -468,12 +460,9 @@ with cB:
 with cC:
     st.success("Tip: Ajusta el **radio del punto** y usa **Centrar vista** para explorar mejor el mapa.")
 
-
 # =========================
 # 🤖 Agente de preguntas de agricultura (beta)
 # =========================
-import re
-
 st.divider()
 st.subheader("🤖 Agente de preguntas agrícolas (beta)")
 
@@ -486,9 +475,8 @@ with col_ag2:
     modo_detalle = st.radio("Nivel de detalle de respuesta", ["Resumido", "Completo"], horizontal=True)
 
 DATA_ACTUAL = df_f if usar_filtros else df
-
-REGIONES = sorted(df["region"].unique().tolist())
-CULTIVOS = sorted(df["cultivo"].unique().tolist())
+REGIONES = sorted(DATA_ACTUAL["region"].unique().tolist())
+CULTIVOS = sorted(DATA_ACTUAL["cultivo"].unique().tolist())
 
 def _extract_entities(q: str):
     ql = q.lower()
@@ -581,70 +569,72 @@ def _bar_chart(d: pd.DataFrame, group_col: str, y_col: str, title: str):
     st.altair_chart(ch, use_container_width=True)
 
 def answer_question(q: str, data: pd.DataFrame):
-    """Devuelve (texto_respuesta, df_opcional, tipo_extra) donde tipo_extra puede ser 'tabla', 'barra', 'tendencia'."""
+    """Devuelve (texto_respuesta, df_opcional, extra) donde:
+       - extra == 'tabla' para tablas
+       - extra == ('barra', group_col, y_col) para barras
+       - extra == ('tendencia', y_col) para series temporales
+    """
+    ql = q.lower()
     region, cultivo = _extract_entities(q)
     d = _subset(data, region, cultivo)
 
     if d.empty:
         return ("No encontré datos que coincidan con tu consulta. Ajusta filtros/región/cultivo e inténtalo de nuevo.", None, None)
 
-    ql = q.lower()
-
     # --- Top N por rendimiento
-    if "top" in ql or "mejores" in ql:
+    if ("top" in ql) or ("mejores" in ql):
         n = 10
-        m = re.search(r"top\s*(\d+)", ql)
+        m = re.search(r"top\s*(\d+)", ql) or re.search(r"top(\d+)", ql)
         if m:
-            try: n = max(1, min(100, int(m.group(1))))
-            except: pass
+            try:
+                n = max(1, min(100, int(m.group(1))))
+            except:
+                pass
         top = d.sort_values("rendimiento_t_ha", ascending=False).head(n)
         text = f"Top {len(top)} fincas por **rendimiento (t/ha)** · {_describe_scope(region, cultivo, usar_filtros)}"
         return (text, top[["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"]], "tabla")
 
     # --- Estadística de rendimiento
-    if "rend" in ql or "productividad" in ql:
+    if ("rend" in ql) or ("productividad" in ql):
         text = f"Resumen de **rendimiento (t/ha)** · {_describe_scope(region, cultivo, usar_filtros)}"
-        if "por región" in ql:
+        if ("por región" in ql) or ("por region" in ql):
             return (text, d, ("barra","region","rendimiento_t_ha"))
-        if "por cultivo" in ql:
+        if ("por cultivo" in ql):
             return (text, d, ("barra","cultivo","rendimiento_t_ha"))
-        if "tendencia" in ql or "serie" in ql:
+        if ("tendencia" in ql) or ("serie" in ql):
             return (text, d, ("tendencia","rendimiento_t_ha"))
-        # default resumido
         stats = d["rendimiento_t_ha"].describe()[["count","mean","std","min","max"]]
         text += f"\n- n={int(stats['count'])} · media={stats['mean']:.2f} · σ={stats['std']:.2f} · min={stats['min']:.2f} · max={stats['max']:.2f}"
         return (text, None, None)
 
     # --- Lluvia
-    if "lluvia" in ql or "precipitaci" in ql:
+    if ("lluvia" in ql) or ("precipitaci" in ql):
         text = f"**Lluvia (mm)** · {_describe_scope(region, cultivo, usar_filtros)}"
-        if "por región" in ql:
+        if ("por región" in ql) or ("por region" in ql):
             return (text, d, ("barra","region","lluvia_mm"))
-        if "por cultivo" in ql:
+        if ("por cultivo" in ql):
             return (text, d, ("barra","cultivo","lluvia_mm"))
-        if "tendencia" in ql or "serie" in ql:
+        if ("tendencia" in ql) or ("serie" in ql):
             return (text, d, ("tendencia","lluvia_mm"))
         stats = d["lluvia_mm"].describe()[["count","mean","std","min","max"]]
         text += f"\n- n={int(stats['count'])} · media={stats['mean']:.1f} · σ={stats['std']:.1f} · min={stats['min']:.1f} · max={stats['max']:.1f}"
         return (text, None, None)
 
     # --- NDVI
-    if "ndvi" in ql or "vigor" in ql:
+    if ("ndvi" in ql) or ("vigor" in ql):
         text = f"**NDVI** · {_describe_scope(region, cultivo, usar_filtros)}"
-        if "por región" in ql:
+        if ("por región" in ql) or ("por region" in ql):
             return (text, d, ("barra","region","ndvi"))
-        if "por cultivo" in ql:
+        if ("por cultivo" in ql):
             return (text, d, ("barra","cultivo","ndvi"))
-        if "tendencia" in ql or "serie" in ql:
+        if ("tendencia" in ql) or ("serie" in ql):
             return (text, d, ("tendencia","ndvi"))
         stats = d["ndvi"].describe()[["count","mean","std","min","max"]]
         text += f"\n- n={int(stats['count'])} · media={stats['mean']:.3f} · σ={stats['std']:.3f} · min={stats['min']:.3f} · max={stats['max']:.3f}"
         return (text, None, None)
 
-    # --- Comparativos rápidos
-    if "¿" in q or "?" in q or "cual" in ql or "cuál" in ql or "mejor" in ql:
-        # Ej: "¿Cuál cultivo rinde más en Antioquia?"
-        # Si hay región -> comparar por cultivo; si hay cultivo -> comparar por región.
+    # --- Comparativos rápidos con pregunta
+    if ("¿" in q) or ("?" in q) or ("cual" in ql) or ("cuál" in ql) or ("mejor" in ql):
         if region and not cultivo:
             text = f"Comparativo de **rendimiento** por cultivo en **{region}**"
             return (text, d, ("barra","cultivo","rendimiento_t_ha"))
@@ -653,7 +643,7 @@ def answer_question(q: str, data: pd.DataFrame):
             return (text, d, ("barra","region","rendimiento_t_ha"))
 
     # --- Recomendaciones básicas
-    if "recom" in ql or "suger" in ql or "consejo" in ql:
+    if ("recom" in ql) or ("suger" in ql) or ("consejo" in ql):
         tips = _advice_block(d)
         if tips:
             txt = f"Recomendaciones (heurísticas) · {_describe_scope(region, cultivo, usar_filtros)}\n- " + "\n- ".join(tips)
@@ -690,10 +680,17 @@ if prompt:
 
     with st.chat_message("assistant"):
         st.markdown(texto)
-        if extra is None and isinstance(payload, pd.DataFrame):
-            _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
+
+        # Render según tipo de respuesta
+        if extra is None:
+            if isinstance(payload, pd.DataFrame):
+                _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
+        elif isinstance(extra, str) and extra == "tabla":
+            if isinstance(payload, pd.DataFrame) and not payload.empty:
+                _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
+            else:
+                st.info("No hay filas para mostrar.")
         elif isinstance(extra, tuple):
-            # extra puede ser ("barra", group_col, y_col) o ("tendencia", y_col)
             if extra[0] == "barra":
                 _, group_col, y_col = extra
                 _bar_chart(payload, group_col, y_col, title=y_col.replace("_", " ").upper())
@@ -703,4 +700,3 @@ if prompt:
 
     # Guardar la respuesta en el historial
     st.session_state.agro_chat.append(("assistant", texto))
-
