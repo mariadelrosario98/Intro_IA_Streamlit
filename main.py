@@ -89,6 +89,128 @@ def generar_datos_agro(seed: int, n: int) -> pd.DataFrame:
 df = generar_datos_agro(seed, n_obs)
 
 # =========================
+# Carga de CSV (opcional) — Reemplaza el dataset sintético
+# =========================
+
+st.subheader("📤 Cargar CSV (opcional)")
+with st.expander("Usar mis propios datos (en lugar de los aleatorios)", expanded=False):
+    fuente_cols = {
+        "fecha": ["fecha", "date", "fecharegistro"],
+        "finca_id": ["finca_id", "finca", "id_finca", "id"],
+        "cultivo": ["cultivo", "crop", "variedad"],
+        "region": ["region", "departamento", "zona"],
+        "lat": ["lat", "latitude", "latitud"],
+        "lon": ["lon", "lng", "long", "longitud", "longitude"],
+        "area_ha": ["area_ha", "area", "hectareas", "ha"],
+        "rendimiento_t_ha": ["rendimiento_t_ha", "rend_t_ha", "rendimiento", "yield_t_ha", "t_ha"],
+        "lluvia_mm": ["lluvia_mm", "lluvia", "precipitacion_mm", "rain_mm"],
+        "ndvi": ["ndvi", "indice_ndvi", "vigor"]
+    }
+
+    def _guess_col(cols, aliases):
+        cols_low = [c.lower().strip() for c in cols]
+        for a in aliases:
+            if a in cols_low:
+                return cols[cols_low.index(a)]
+        return None
+
+    def _auto_map_columns(df_csv: pd.DataFrame):
+        mapping = {}
+        for target, aliases in fuente_cols.items():
+            mapped = _guess_col(df_csv.columns.tolist(), aliases)
+            mapping[target] = mapped
+        return mapping
+
+    up = st.file_uploader("Sube un archivo CSV", type=["csv"])
+    col_up1, col_up2 = st.columns([2, 1])
+    with col_up1:
+        delimiter = st.selectbox("Delimitador", [",", ";", "\t", "|"], index=0)
+    with col_up2:
+        enc = st.selectbox("Codificación", ["utf-8", "latin-1", "utf-16"], index=0)
+
+    if up is not None:
+        try:
+            df_csv = pd.read_csv(up, sep=delimiter, encoding=enc)
+        except Exception as e:
+            st.error(f"No pude leer el CSV: {e}")
+            df_csv = None
+
+        if df_csv is not None:
+            st.caption(f"Archivo cargado: {up.name} · {len(df_csv):,} filas · {len(df_csv.columns)} columnas".replace(",", "."))
+            st.dataframe(df_csv.head(10), use_container_width=True, height=220)
+
+            # Intento de mapeo automático
+            mapping = _auto_map_columns(df_csv)
+
+            st.markdown("**Mapeo de columnas** (ajústalo si es necesario):")
+            col_map1, col_map2, col_map3 = st.columns(3)
+            required = list(fuente_cols.keys())
+
+            # Controles de mapeo (en 3 columnas para no alargar)
+            widgets = {}
+            groups = [required[i::3] for i in range(3)]
+            for ix, group in enumerate(groups):
+                with [col_map1, col_map2, col_map3][ix]:
+                    for tgt in group:
+                        widgets[tgt] = st.selectbox(
+                            f"{tgt}",
+                            options=["—"] + df_csv.columns.tolist(),
+                            index=(df_csv.columns.tolist().index(mapping[tgt]) + 1) if mapping[tgt] in df_csv.columns else 0
+                        )
+
+            if st.button("✅ Usar este CSV en el EDA"):
+                # Validar selección
+                sel = {k: v for k, v in widgets.items() if v != "—"}
+                missing = [k for k in required if k not in sel]
+                if len(sel) < len(required):
+                    st.warning(f"Faltan columnas por mapear: {', '.join([m for m in required if m not in sel])}")
+                else:
+                    # Construir DF canónico con nombres esperados
+                    df_user = pd.DataFrame({
+                        "fecha": df_csv[sel["fecha"]],
+                        "finca_id": df_csv[sel["finca_id"]],
+                        "cultivo": df_csv[sel["cultivo"]],
+                        "region": df_csv[sel["region"]],
+                        "lat": df_csv[sel["lat"]],
+                        "lon": df_csv[sel["lon"]],
+                        "area_ha": df_csv[sel["area_ha"]],
+                        "rendimiento_t_ha": df_csv[sel["rendimiento_t_ha"]],
+                        "lluvia_mm": df_csv[sel["lluvia_mm"]],
+                        "ndvi": df_csv[sel["ndvi"]],
+                    }).copy()
+
+                    # Coerciones y limpieza ligera
+                    # fecha
+                    df_user["fecha"] = pd.to_datetime(df_user["fecha"], errors="coerce")
+                    # numéricos
+                    for c in ["lat", "lon", "area_ha", "rendimiento_t_ha", "lluvia_mm", "ndvi"]:
+                        df_user[c] = pd.to_numeric(df_user[c], errors="coerce")
+
+                    # drops de NaN críticos
+                    before = len(df_user)
+                    df_user = df_user.dropna(subset=["fecha", "lat", "lon"]).reset_index(drop=True)
+                    dropped = before - len(df_user)
+
+                    # tipados finales
+                    df_user["finca_id"] = df_user["finca_id"].astype(str)
+                    df_user["cultivo"] = df_user["cultivo"].astype(str)
+                    df_user["region"]  = df_user["region"].astype(str)
+
+                    # orden y ordenamiento
+                    df_user = df_user[[
+                        "fecha", "finca_id", "cultivo", "region", "lat", "lon",
+                        "area_ha", "rendimiento_t_ha", "lluvia_mm", "ndvi"
+                    ]].sort_values("fecha").reset_index(drop=True)
+
+                    if dropped > 0:
+                        st.info(f"Se descartaron {dropped} filas por fecha/lat/lon no válidas.")
+
+                    # Reemplazar dataset base
+                    df = df_user
+                    st.success("✅ ¡Listo! Ahora el EDA usa **tu CSV**. Ajusta los filtros de arriba para explorar.")
+
+
+# =========================
 # Filtros interactivos
 # =========================
 with st.expander("🧰 Filtros y opciones", expanded=True):
