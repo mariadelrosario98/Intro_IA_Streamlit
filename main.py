@@ -1,4 +1,4 @@
-# App de Agricultura - EDA interactivo con datos aleatorios (corregida)
+# App de Agricultura - EDA interactivo
 
 import streamlit as st
 import pandas as pd
