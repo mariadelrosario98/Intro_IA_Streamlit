@@ -6,6 +6,8 @@ import numpy as np
 import altair as alt
 import pydeck as pdk
 import re
+import os
+import tempfile
 
 # =========================
 # Configuración de página
@@ -23,6 +25,14 @@ n_obs = 500  # según requerimiento
 st.sidebar.write(f"Observaciones: **{n_obs}** (fijas)")
 st.sidebar.divider()
 
+# Sección de configuración del agente en la barra lateral
+st.sidebar.header("🤖 Agente de IA")
+huggingface_token = st.sidebar.text_input("Ingresa tu token de Hugging Face:", type="password")
+
+if huggingface_token:
+    os.environ["HUGGINGFACEHUB_API_TOKEN"] = huggingface_token
+    st.sidebar.success("Token de Hugging Face configurado.")
+    
 # =========================
 # Generación del dataset sintético
 # =========================
@@ -460,168 +470,126 @@ with cB:
 with cC:
     st.success("Tip: Ajusta el **radio del punto** y usa **Centrar vista** para explorar mejor el mapa.")
 
-# =========================
-# =========================
-# =========================
-# 🤖 Agente de preguntas de agricultura (beta, mejorado)
-# =========================
-# 🤖 Agente de preguntas de agricultura (beta) con LLM y Token Hugging Face
-# =========================
-import json, unicodedata, re, os
+# =ale= ========================
+# 🤖 Agente de preguntas de agricultura
+# ==============================
+# Se eliminó la sección anterior para reemplazarla con el nuevo agente.
+# ==============================
+import langchain
+from langchain.agents import create_csv_agent
+from langchain.llms import HuggingFaceHub
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain_community.document_loaders import DataFrameLoader
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import CharacterTextSplitter
 
-try:
-    from transformers import pipeline
-    _TRANSFORMERS_OK = True
-except Exception as _e:
-    _TRANSFORMERS_OK = False
-    _TRANSFORMERS_ERR = str(_e)
+# ===============================
+# Funciones para el agente de IA
+# ===============================
 
+@st.cache_resource
+def create_hf_llm(token: str):
+    """Crea una instancia del modelo HuggingFaceHub."""
+    if not token:
+        st.error("No se ha configurado el token de Hugging Face.")
+        return None
+    
+    try:
+        llm = HuggingFaceHub(
+            repo_id="google/flan-t5-xxl",
+            model_kwargs={"temperature": 0.5, "max_length": 512}
+        )
+        return llm
+    except Exception as e:
+        st.error(f"Error al inicializar el modelo de Hugging Face: {e}")
+        return None
+
+def create_agent(df_temp, llm):
+    """Crea un agente a partir de un DataFrame."""
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+    df_temp.to_csv(temp_file.name, index=False)
+    
+    agent = create_csv_agent(llm, temp_file.name, verbose=True)
+    return agent, temp_file.name
+
+def create_retriever(df_temp):
+    """Crea un recuperador (retriever) para RAG a partir de un DataFrame."""
+    # Convertir el DataFrame a un formato de documento para el cargador
+    loader = DataFrameLoader(df_temp, page_content_column="cultivo")
+    documents = loader.load()
+    
+    # Dividir el texto en "chunks" para la búsqueda
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+    docs = text_splitter.split_documents(documents)
+    
+    # Crear embeddings y el vectorstore
+    embeddings = HuggingFaceEmbeddings()
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    
+    return vectorstore.as_retriever()
+
+# ===============================
+# Interfaz del Agente
+# ===============================
 st.divider()
 st.subheader("🤖 Agente de preguntas agrícolas (beta)")
 
-# --- Cuadro para el token HF ---
-with st.expander("🔑 Configuración de Hugging Face", expanded=False):
-    token_input = st.text_input(
-        "Pega tu Hugging Face Access Token (secreto)",
-        type="password",
-        help="Genera uno en https://huggingface.co/settings/tokens"
-    )
-    if token_input:
-        st.session_state["hf_token"] = token_input
-        os.environ["HF_TOKEN"] = token_input
-        st.success("✅ Token almacenado en la sesión.")
-
-# --- Preferencias del agente
-col_ag1, col_ag2 = st.columns([2, 3])
-with col_ag1:
-    usar_filtros = st.toggle(
-        "Usar datos filtrados (df_f)", value=True,
-        help="Si está activo, el agente responde con base en el subconjunto filtrado por tus controles de arriba."
-    )
-    usar_llm = st.toggle(
-        "Responder con LLM (DeepSeek-V3.1)", value=True,
-        help="Si se apaga, se usa el router heurístico existente (sin LLM)."
-    )
-with col_ag2:
-    modo_detalle = st.radio("Nivel de detalle de respuesta", ["Resumido", "Completo"], horizontal=True)
-
-DATA_ACTUAL = df_f if usar_filtros else df
-REGIONES = sorted(DATA_ACTUAL["region"].unique().tolist())
-CULTIVOS = sorted(DATA_ACTUAL["cultivo"].unique().tolist())
-
-# ---------- Configuración del LLM ----------
-SYS_PROMPT = (
-    "Eres un asistente que responde EXCLUSIVAMENTE sobre agricultura. "
-    "Usa únicamente el CONTEXTO DE DATOS que te doy (estadísticas y muestras). "
-    "Si la pregunta no es agrícola o el dato no está en el contexto, responde: "
-    "'No tengo datos suficientes en la base actual para responder con confianza.' "
-    "Cita variables o campos relevantes de los datos cuando corresponda."
+# Elección de datos para el agente
+usar_filtros = st.toggle(
+    "Usar datos filtrados para el agente", 
+    value=True, 
+    help="Si está activo, el agente responde con base en el subconjunto de datos que has filtrado con los controles de arriba."
 )
+DATA_ACTUAL = df_f if usar_filtros else df
 
-@st.cache_resource(show_spinner=True)
-def get_llm(token: str | None = None):
-    if not _TRANSFORMERS_OK:
-        return None
-    try:
-        # si hay token, lo pasamos explícitamente
-        auth = {"use_auth_token": token} if token else {}
-        return pipeline(
-            "text-generation",
-            model="deepseek-ai/DeepSeek-V3.1",
-            trust_remote_code=True,
-            device_map="auto",
-            torch_dtype="auto",
-            max_new_tokens=400,
-            do_sample=False,
-            temperature=0.2,
-            top_p=0.9,
-            **auth
-        )
-    except Exception as e:
-        st.warning(f"No pude inicializar el modelo (DeepSeek-V3.1): {e}")
-        return None
+tab_sin_rag, tab_con_rag = st.tabs(["Sin RAG", "Con RAG (Mejor contexto)"])
 
-def _contexto_compacto(d: pd.DataFrame, max_rows: int = 12) -> str:
-    if d.empty:
-        return "No hay filas en el subconjunto actual."
-    desc = d[["rendimiento_t_ha","lluvia_mm","ndvi","area_ha"]].describe().to_dict()
-    sample = d.sample(min(len(d), max_rows), random_state=0)[
-        ["fecha","finca_id","cultivo","region","lat","lon","area_ha",
-         "rendimiento_t_ha","lluvia_mm","ndvi"]
-    ]
-    return json.dumps({
-        "resumen_estadistico": desc,
-        "muestras": sample.astype({
-            "fecha":"string","finca_id":"string","cultivo":"string","region":"string"
-        }).to_dict(orient="records")
-    }, ensure_ascii=False)
-
-def generate_llm_answer(question: str, d: pd.DataFrame, usar_filtros: bool, region: str | None, cultivo: str | None) -> str:
-    token = st.session_state.get("hf_token")
-    pipe = get_llm(token)
-    if pipe is None:
-        return "⚠️ No hay modelo cargado. Verifica que `transformers` esté instalado y que hayas pegado tu token de Hugging Face."
-
-    contexto = (
-        f"Fuente: {'datos filtrados' if usar_filtros else 'todos los datos'} · "
-        f"Región: {region or '—'} · Cultivo: {cultivo or '—'}\n"
-        f"DATA:\n{_contexto_compacto(d)}"
-    )
-    messages = [
-        {"role": "system", "content": SYS_PROMPT},
-        {"role": "user", "content": f"Pregunta: {question}\n\n{contexto}"}
-    ]
-    try:
-        out = pipe(messages)
-        text = out[0]["generated_text"] if isinstance(out, list) else str(out)
-        return text.strip()
-    except Exception as e:
-        return f"No pude generar respuesta con el LLM: {e}"
-
-# --- Historial de chat
-if "agro_chat" not in st.session_state:
-    st.session_state.agro_chat = []
-
-for role, content in st.session_state.agro_chat:
-    with st.chat_message(role):
-        st.markdown(content)
-
-# --- Entrada del usuario
-prompt = st.chat_input("Haz una pregunta (ej: 'Mejor fertilizante para café', 'Top 5 por rendimiento en Antioquia').")
-if prompt:
-    st.session_state.agro_chat.append(("user", prompt))
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    region, cultivo = _extract_entities(prompt)
-    d_sub = _subset(DATA_ACTUAL, region, cultivo)
-
-    if d_sub.empty:
-        texto = "No tengo datos suficientes en la base actual para responder con confianza (subconjunto vacío)."
-        payload, extra = None, None
-    else:
-        if usar_llm:
-            texto = generate_llm_answer(prompt, d_sub, usar_filtros, region, cultivo)
-            payload, extra = None, None
+# Agente sin RAG
+with tab_sin_rag:
+    st.info("Este agente puede realizar cálculos y responder preguntas sobre los datos, pero no usa un contexto de búsqueda adicional.")
+    user_question_no_rag = st.chat_input("Haz una pregunta sobre tus datos filtrados (ej. 'Cuál es el promedio de rendimiento?', 'cuántas fincas de café hay en Antioquia?')...")
+    if user_question_no_rag:
+        if huggingface_token and not DATA_ACTUAL.empty:
+            llm_hf = create_hf_llm(huggingface_token)
+            if llm_hf:
+                try:
+                    with st.spinner("Generando respuesta..."):
+                        agent, temp_path = create_agent(DATA_ACTUAL, llm_hf)
+                        response = agent.run(user_question_no_rag)
+                    st.markdown(f"**Tu pregunta:** {user_question_no_rag}")
+                    st.markdown(f"**Respuesta del agente:** {response}")
+                    os.unlink(temp_path) # Limpiar el archivo temporal
+                except Exception as e:
+                    st.error(f"Ocurrió un error al ejecutar el agente: {e}")
         else:
-            texto, payload, extra = answer_question(prompt, DATA_ACTUAL)
+            st.warning("Por favor, ingresa tu token de Hugging Face y asegúrate de tener datos para analizar.")
 
-    with st.chat_message("assistant"):
-        st.markdown(texto)
-        # Renderizaciones extra (si usas answer_question heurístico)
-        if extra is None:
-            if isinstance(payload, pd.DataFrame):
-                _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
-        elif isinstance(extra, str) and extra == "tabla":
-            if isinstance(payload, pd.DataFrame) and not payload.empty:
-                _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
-            else:
-                st.info("No hay filas para mostrar.")
-        elif isinstance(extra, tuple):
-            if extra[0] == "barra":
-                _, group_col, y_col = extra
-                _bar_chart(payload, group_col, y_col, title=y_col.replace("_", " ").upper())
-            elif extra[0] == "tendencia":
+# Agente con RAG
+with tab_con_rag:
+    st.info("Este agente busca en la base de datos de documentos para encontrar el contexto más relevante antes de responder.")
+    user_question_rag = st.chat_input("Haz una pregunta contextual (ej. 'Dime más sobre los datos de la finca F0012', 'Explica los valores de NDVI para la región de Huila')...")
+    if user_question_rag:
+        if huggingface_token and not DATA_ACTUAL.empty:
+            llm_hf = create_hf_llm(huggingface_token)
+            if llm_hf:
+                try:
+                    with st.spinner("Buscando y generando respuesta..."):
+                        retriever = create_retriever(DATA_ACTUAL)
+                        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+                        qa_chain = ConversationalRetrievalChain.from_llm(
+                            llm_hf,
+                            retriever=retriever,
+                            memory=memory
+                        )
+                        response = qa_chain.run(user_question_rag)
+                    st.markdown(f"**Tu pregunta:** {user_question_rag}")
+                    st.markdown(f"**Respuesta del agente:** {response}")
+                except Exception as e:
+                    st.error(f"Ocurrió un error al ejecutar el agente con RAG: {e}")
+        else:
+            st.warning("Por favor, ingresa tu token de Hugging Face y asegúrate de tener datos para analizar.")
                 _, y_col = extra
                 _trend_chart(payload, y_col, title=y_col.replace("_", " ").upper())
 
