@@ -1,596 +1,140 @@
-# App de Agricultura - EDA interactivo
-
-import streamlit as st
 import pandas as pd
-import numpy as np
-import altair as alt
-import pydeck as pdk
-import re
-import os
-import tempfile
-
-# =========================
-# Configuración de página
-# =========================
-st.set_page_config(page_title="Agricultura: EDA interactivo", page_icon="🌾", layout="wide")
-st.title("🌾 Agricultura — EDA interactivo")
-st.caption("500 observaciones • 10 columnas • Controles interactivos, gráficos y mapa")
-
-# =========================
-# Sidebar - Controles globales
-# =========================
-st.sidebar.header("Parámetros de los datos")
-seed = st.sidebar.number_input("Semilla aleatoria", min_value=0, max_value=10_000, value=123, step=1)
-n_obs = 500  # según requerimiento
-st.sidebar.write(f"Observaciones: **{n_obs}** (fijas)")
-st.sidebar.divider()
-
-# Sección de configuración del agente en la barra lateral
-st.sidebar.header("🤖 Agente de IA")
-huggingface_token = st.sidebar.text_input("Ingresa tu token de Hugging Face:", type="password")
-
-if huggingface_token:
-    os.environ["HUGGINGFACEHUB_API_TOKEN"] = huggingface_token
-    st.sidebar.success("Token de Hugging Face configurado.")
-    
-# =========================
-# Generación del dataset sintético
-# =========================
-# 10 columnas: fecha, finca_id, cultivo, region, lat, lon, area_ha, rendimiento_t_ha, lluvia_mm, ndvi
-@st.cache_data(show_spinner=False)
-def generar_datos_agro(seed: int, n: int) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-
-    # Fechas dentro del último año
-    fechas = pd.to_datetime("today").normalize() - pd.to_timedelta(rng.integers(0, 365, size=n), unit="D")
-
-    # Fincas y regiones
-    fincas = [f"F{str(i).zfill(4)}" for i in rng.integers(1, 3000, size=n)]
-    cultivos = rng.choice(
-        ["Café", "Maíz", "Arroz", "Cacao", "Banano", "Papa", "Soja"],
-        size=n,
-        p=[0.22, 0.18, 0.14, 0.10, 0.14, 0.12, 0.10]
-    )
-    regiones = rng.choice(
-        ["Antioquia", "Huila", "Tolima", "Cundinamarca", "Santander", "Cesar"],
-        size=n
-    )
-
-    # Lat/Lon aproximados de Colombia (ruido alrededor de centroides regionales)
-    centros = {
-        "Antioquia": (6.25, -75.56),
-        "Huila": (2.94, -75.28),
-        "Tolima": (4.44, -75.24),
-        "Cundinamarca": (4.71, -74.07),
-        "Santander": (7.13, -73.13),
-        "Cesar": (10.46, -73.25),
-    }
-    lat = np.array([centros[r][0] for r in regiones]) + rng.normal(0, 0.35, size=n)
-    lon = np.array([centros[r][1] for r in regiones]) + rng.normal(0, 0.35, size=n)
-
-    # Área (ha), rendimiento (t/ha), lluvia (mm), NDVI
-    area_ha = np.clip(rng.normal(5, 3, size=n), 0.2, 50).round(2)
-    base_yield = {
-        "Café": 1.2, "Maíz": 5.0, "Arroz": 4.5, "Cacao": 0.9,
-        "Banano": 30.0, "Papa": 16.0, "Soja": 2.8
-    }
-    lluvia_mm = np.clip(rng.normal(120, 60, size=n), 0, 400).round(1)
-    ruido_y = rng.normal(0, 0.15, size=n)
-    rendimiento_t_ha = (
-        np.array([base_yield[c] for c in cultivos]) * (1 + (lluvia_mm - 120)/800) * (1 + ruido_y)
-    )
-    rendimiento_t_ha = np.clip(rendimiento_t_ha, 0.2, None).round(2)
-    ndvi = np.clip(rng.normal(0.65, 0.12, size=n), 0.1, 0.95).round(3)
-
-    df = pd.DataFrame({
-        "fecha": fechas,
-        "finca_id": fincas,
-        "cultivo": cultivos,
-        "region": regiones,
-        "lat": lat.astype(float).round(5),
-        "lon": lon.astype(float).round(5),
-        "area_ha": area_ha.astype(float),
-        "rendimiento_t_ha": rendimiento_t_ha.astype(float),
-        "lluvia_mm": lluvia_mm.astype(float),
-        "ndvi": ndvi.astype(float)
-    }).sort_values("fecha").reset_index(drop=True)
-
-    return df
-
-df = generar_datos_agro(seed, n_obs)
-
-# =========================
-# Carga de CSV (opcional) — Reemplaza el dataset sintético
-# =========================
-st.subheader("📤 Cargar CSV (opcional)")
-with st.expander("Usar mis propios datos (en lugar de los aleatorios)", expanded=False):
-    fuente_cols = {
-        "fecha": ["fecha", "date", "fecharegistro"],
-        "finca_id": ["finca_id", "finca", "id_finca", "id"],
-        "cultivo": ["cultivo", "crop", "variedad"],
-        "region": ["region", "departamento", "zona"],
-        "lat": ["lat", "latitude", "latitud"],
-        "lon": ["lon", "lng", "long", "longitud", "longitude"],
-        "area_ha": ["area_ha", "area", "hectareas", "ha"],
-        "rendimiento_t_ha": ["rendimiento_t_ha", "rend_t_ha", "rendimiento", "yield_t_ha", "t_ha"],
-        "lluvia_mm": ["lluvia_mm", "lluvia", "precipitacion_mm", "rain_mm"],
-        "ndvi": ["ndvi", "indice_ndvi", "vigor"]
-    }
-
-    def _guess_col(cols, aliases):
-        cols_low = [c.lower().strip() for c in cols]
-        for a in aliases:
-            if a in cols_low:
-                return cols[cols_low.index(a)]
-        return None
-
-    def _auto_map_columns(df_csv: pd.DataFrame):
-        mapping = {}
-        for target, aliases in fuente_cols.items():
-            mapped = _guess_col(df_csv.columns.tolist(), aliases)
-            mapping[target] = mapped
-        return mapping
-
-    up = st.file_uploader("Sube un archivo CSV", type=["csv"])
-    col_up1, col_up2 = st.columns([2, 1])
-    with col_up1:
-        delimiter = st.selectbox("Delimitador", [",", ";", "\t", "|"], index=0)
-    with col_up2:
-        enc = st.selectbox("Codificación", ["utf-8", "latin-1", "utf-16"], index=0)
-
-    if up is not None:
-        try:
-            df_csv = pd.read_csv(up, sep=delimiter, encoding=enc)
-        except Exception as e:
-            st.error(f"No pude leer el CSV: {e}")
-            df_csv = None
-
-        if df_csv is not None:
-            st.caption(f"Archivo cargado: {up.name} · {len(df_csv):,} filas · {len(df_csv.columns)} columnas".replace(",", "."))
-            st.dataframe(df_csv.head(10), use_container_width=True, height=220)
-
-            # Intento de mapeo automático
-            mapping = _auto_map_columns(df_csv)
-
-            st.markdown("**Mapeo de columnas** (ajústalo si es necesario):")
-            col_map1, col_map2, col_map3 = st.columns(3)
-            required = list(fuente_cols.keys())
-
-            # Controles de mapeo (en 3 columnas para no alargar)
-            widgets = {}
-            groups = [required[i::3] for i in range(3)]
-            for ix, group in enumerate(groups):
-                with [col_map1, col_map2, col_map3][ix]:
-                    for tgt in group:
-                        widgets[tgt] = st.selectbox(
-                            f"{tgt}",
-                            options=["—"] + df_csv.columns.tolist(),
-                            index=(df_csv.columns.tolist().index(mapping[tgt]) + 1) if mapping[tgt] in df_csv.columns else 0
-                        )
-
-            if st.button("✅ Usar este CSV en el EDA"):
-                sel = {k: v for k, v in widgets.items() if v != "—"}
-                if len(sel) < len(required):
-                    faltan = [k for k in required if k not in sel]
-                    st.warning(f"Faltan columnas por mapear: {', '.join(faltan)}")
-                else:
-                    df_user = pd.DataFrame({
-                        "fecha": df_csv[sel["fecha"]],
-                        "finca_id": df_csv[sel["finca_id"]],
-                        "cultivo": df_csv[sel["cultivo"]],
-                        "region": df_csv[sel["region"]],
-                        "lat": df_csv[sel["lat"]],
-                        "lon": df_csv[sel["lon"]],
-                        "area_ha": df_csv[sel["area_ha"]],
-                        "rendimiento_t_ha": df_csv[sel["rendimiento_t_ha"]],
-                        "lluvia_mm": df_csv[sel["lluvia_mm"]],
-                        "ndvi": df_csv[sel["ndvi"]],
-                    }).copy()
-
-                    # Coerciones y limpieza ligera
-                    df_user["fecha"] = pd.to_datetime(df_user["fecha"], errors="coerce")
-                    for c in ["lat", "lon", "area_ha", "rendimiento_t_ha", "lluvia_mm", "ndvi"]:
-                        df_user[c] = pd.to_numeric(df_user[c], errors="coerce")
-
-                    before = len(df_user)
-                    df_user = df_user.dropna(subset=["fecha", "lat", "lon"]).reset_index(drop=True)
-                    dropped = before - len(df_user)
-
-                    df_user["finca_id"] = df_user["finca_id"].astype(str)
-                    df_user["cultivo"] = df_user["cultivo"].astype(str)
-                    df_user["region"]  = df_user["region"].astype(str)
-
-                    df_user = df_user[[
-                        "fecha", "finca_id", "cultivo", "region", "lat", "lon",
-                        "area_ha", "rendimiento_t_ha", "lluvia_mm", "ndvi"
-                    ]].sort_values("fecha").reset_index(drop=True)
-
-                    if dropped > 0:
-                        st.info(f"Se descartaron {dropped} filas por fecha/lat/lon no válidas.")
-
-                    # Reemplazar dataset base
-                    df = df_user
-                    st.success("✅ ¡Listo! Ahora el EDA usa **tu CSV**. Ajusta los filtros de arriba para explorar.")
-
-# =========================
-# Filtros interactivos
-# =========================
-with st.expander("🧰 Filtros y opciones", expanded=True):
-    cols = st.columns(3)
-    with cols[0]:
-        regiones_sel = st.multiselect(
-            "Regiones",
-            options=sorted(df["region"].unique()),
-            default=sorted(df["region"].unique())
-        )
-    with cols[1]:
-        cultivos_sel = st.multiselect(
-            "Cultivos",
-            options=sorted(df["cultivo"].unique()),
-            default=sorted(df["cultivo"].unique())
-        )
-    with cols[2]:
-        fecha_rango = st.slider(
-            "Rango de fechas",
-            min_value=df["fecha"].min().date(),
-            max_value=df["fecha"].max().date(),
-            value=(df["fecha"].min().date(), df["fecha"].max().date())
-        )
-
-    colx, coly, colz = st.columns(3)
-    with colx:
-        area_rango = st.slider(
-            "Área (ha)",
-            min_value=float(df["area_ha"].min()),
-            max_value=float(df["area_ha"].max()),
-            value=(float(df["area_ha"].min()), float(df["area_ha"].max()))
-        )
-    with coly:
-        yield_rango = st.slider(
-            "Rendimiento (t/ha)",
-            min_value=float(df["rendimiento_t_ha"].min()),
-            max_value=float(df["rendimiento_t_ha"].max()),
-            value=(float(df["rendimiento_t_ha"].min()), float(df["rendimiento_t_ha"].max()))
-        )
-    with colz:
-        ndvi_min = st.slider(
-            "NDVI mínimo",
-            min_value=float(df["ndvi"].min()),
-            max_value=float(df["ndvi"].max()),
-            value=float(df["ndvi"].min())
-        )
-
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
-    with c1:
-        mostrar_datos = st.checkbox("Mostrar tabla", value=True)
-    with c2:
-        boton_recalcular = st.button("🔄 Regenerar datos")
-    with c3:
-        marcar_top = st.checkbox("Marcar top 10 por rendimiento", value=False)
-    with c4:
-        color_mapa = st.radio("Color del mapa por:", ["cultivo", "region"], horizontal=True)
-
-# Recalcular (cambia semilla para forzar nuevo set)
-if boton_recalcular:
-    seed = int(seed) + 1
-    df = generar_datos_agro(seed, n_obs)
-
-# Aplicar filtros
-mask = (
-    df["region"].isin(regiones_sel) &
-    df["cultivo"].isin(cultivos_sel) &
-    (df["fecha"].dt.date >= fecha_rango[0]) &
-    (df["fecha"].dt.date <= fecha_rango[1]) &
-    (df["area_ha"].between(area_rango[0], area_rango[1])) &
-    (df["rendimiento_t_ha"].between(yield_rango[0], yield_rango[1])) &
-    (df["ndvi"] >= ndvi_min)
-)
-df_f = df[mask].copy()
-
-# Top 10 por rendimiento (flag)
-df_f["is_top"] = False
-if marcar_top and len(df_f) > 0:
-    top_idx = df_f["rendimiento_t_ha"].nlargest(10).index
-    df_f.loc[top_idx, "is_top"] = True
-
-# =========================
-# Métricas
-# =========================
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Muestras", f"{len(df_f):,}".replace(",", "."))
-m2.metric("Área total (ha)", f"{df_f['area_ha'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-m3.metric("Rend. medio (t/ha)", f"{df_f['rendimiento_t_ha'].mean():.2f}".replace(".", ","))
-m4.metric("NDVI medio", f"{df_f['ndvi'].mean():.3f}".replace(".", ","))
-
-st.divider()
-
-# =========================
-# Tabla
-# =========================
-if mostrar_datos:
-    st.subheader("📋 Datos filtrados")
-    st.dataframe(df_f, use_container_width=True, height=260)
-
-# =========================
-# Gráficos
-# =========================
-st.subheader("📈 Visualizaciones")
-
-left, right = st.columns(2, gap="large")
-
-with left:
-    st.markdown("**Distribución de rendimiento (t/ha)**")
-    if len(df_f) > 0:
-        chart_yield = (
-            alt.Chart(df_f)
-            .transform_bin(as_="bin_rend", field="rendimiento_t_ha", bin=alt.Bin(maxbins=30))
-            .mark_bar()
-            .encode(
-                x=alt.X("bin_rend:Q", title="Rendimiento (t/ha)"),
-                y=alt.Y("count():Q", title="Frecuencia"),
-                tooltip=[alt.Tooltip("count():Q", title="Frecuencia")]
-            )
-            .properties(height=320)
-            .interactive()
-        )
-        st.altair_chart(chart_yield, use_container_width=True)
-    else:
-        st.info("No hay datos para el histograma con los filtros actuales.")
-
-with right:
-    st.markdown("**Lluvia promedio por región (mm)**")
-    if len(df_f) > 0:
-        lluvia_region = (
-            df_f.groupby("region", as_index=False)["lluvia_mm"].mean()
-            .rename(columns={"lluvia_mm": "lluvia_prom"})
-        )
-        chart_lluvia = (
-            alt.Chart(lluvia_region)
-            .mark_bar()
-            .encode(
-                x=alt.X("lluvia_prom:Q", title="Lluvia promedio (mm)"),
-                y=alt.Y("region:N", sort="-x", title="Región"),
-                tooltip=[alt.Tooltip("region:N"), alt.Tooltip("lluvia_prom:Q", format=",.1f")]
-            )
-            .properties(height=320)
-            .interactive()
-        )
-        st.altair_chart(chart_lluvia, use_container_width=True)
-    else:
-        st.info("No hay datos para el gráfico de lluvia.")
-
-st.markdown("**Rendimiento medio por cultivo (línea temporal)**")
-if len(df_f) > 0:
-    serie = (
-        df_f.groupby(["fecha", "cultivo"], as_index=False)["rendimiento_t_ha"]
-        .mean()
-        .rename(columns={"rendimiento_t_ha": "rend_medio"})
-    )
-    chart_line = (
-        alt.Chart(serie)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("fecha:T", title="Fecha"),
-            y=alt.Y("rend_medio:Q", title="Rendimiento medio (t/ha)"),
-            color="cultivo:N",
-            tooltip=[alt.Tooltip("fecha:T"), "cultivo:N", alt.Tooltip("rend_medio:Q", format=",.2f")]
-        )
-        .properties(height=350)
-        .interactive()
-    )
-    st.altair_chart(chart_line, use_container_width=True)
-else:
-    st.info("No hay datos para la serie temporal con los filtros actuales.")
-
-st.divider()
-
-# =========================
-# Mapa (pydeck)
-# =========================
-st.subheader("🗺️ Mapa de fincas")
-col_map1, col_map2, col_map3 = st.columns([1, 1, 2])
-with col_map1:
-    mostrar_mapa = st.checkbox("Mostrar mapa", value=True)
-with col_map2:
-    radio_pt = st.slider("Radio del punto (m)", min_value=500, max_value=4000, value=1500, step=100)
-with col_map3:
-    centrar_btn = st.button("📍 Centrar vista")
-
-def _color_column(series: pd.Series) -> pd.Series:
-    # paleta base en listas puras [r,g,b]
-    palette = [
-        [66, 135, 245], [245, 66, 93], [66, 245, 161], [166, 66, 245],
-        [245, 171, 66], [66, 245, 236], [160, 160, 160], [100, 200, 100]
-    ]
-    keys = sorted(series.unique().tolist())
-    mapping = {k: list(palette[i % len(palette)]) for i, k in enumerate(keys)}  # listas puras
-    return series.map(mapping)
-
-if mostrar_mapa and len(df_f) > 0:
-    df_map = df_f.copy()
-    if color_mapa == "cultivo":
-        df_map["color"] = _color_column(df_map["cultivo"])
-    else:
-        df_map["color"] = _color_column(df_map["region"])
-
-    # Estado de vista
-    lat_c = float(df_map["lat"].mean())
-    lon_c = float(df_map["lon"].mean())
-
-    if centrar_btn:
-        lat_c = float(df_map["lat"].mean())
-        lon_c = float(df_map["lon"].mean())
-
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=df_map,
-        get_position='[lon, lat]',
-        get_radius=radio_pt,
-        get_fill_color='color',  # columna del DataFrame con [r,g,b]
-        pickable=True
-    )
-
-    view_state = pdk.ViewState(
-        latitude=lat_c,
-        longitude=lon_c,
-        zoom=5,
-        pitch=0
-    )
-
-    tooltip = {
-        "html": "<b>Finca:</b> {finca_id}<br/>"
-                "<b>Cultivo:</b> {cultivo}<br/>"
-                "<b>Región:</b> {region}<br/>"
-                "<b>Rendimiento:</b> {rendimiento_t_ha} t/ha<br/>"
-                "<b>NDVI:</b> {ndvi}",
-        "style": {"backgroundColor": "steelblue", "color": "white"}
-    }
-
-    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip))
-elif mostrar_mapa:
-    st.info("No hay puntos para mostrar con los filtros actuales.")
-
-st.divider()
-
-# =========================
-# Descargas y acciones
-# =========================
-st.subheader("⬇️ Exportar / Acciones")
-cA, cB, cC = st.columns([2, 2, 3])
-
-with cA:
-    csv = df_f.drop(columns=["is_top"], errors="ignore").to_csv(index=False).encode("utf-8")
-    st.download_button("Descargar CSV filtrado", data=csv, file_name="agro_filtrado.csv", mime="text/csv")
-
-with cB:
-    if st.button("📌 Marcar top 10 y mostrar solo esos"):
-        tmp = df_f.sort_values("rendimiento_t_ha", ascending=False).head(10)
-        st.dataframe(tmp, use_container_width=True)
-
-with cC:
-    st.success("Tip: Ajusta el **radio del punto** y usa **Centrar vista** para explorar mejor el mapa.")
-
-# =ale= ========================
-# 🤖 Agente de preguntas de agricultura
-# ==============================
-# Se eliminó la sección anterior para reemplazarla con el nuevo agente.
-# ==============================
-import langchain
-from langchain.agents import create_csv_agent
-from langchain.llms import HuggingFaceHub
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from langchain_community.document_loaders import DataFrameLoader
-from langchain_community.vectorstores import FAISS
+import streamlit as st
+import plotly.express as px
+from huggingface_hub import InferenceClient
+from langchain.agents import AgentExecutor, create_react_agent, tool
+from langchain import hub
+from langchain_community.llms import HuggingFaceHub
+from langchain_community.tools import tool
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import os
 
-# ===============================
-# Funciones para el agente de IA
-# ===============================
+# --- Configuración de la página ---
+st.set_page_config(page_title="Análisis de Agricultura Colombiana y Agente IA 🚜", layout="wide")
 
-@st.cache_resource
-def create_hf_llm(token: str):
-    """Crea una instancia del modelo HuggingFaceHub."""
-    if not token:
-        st.error("No se ha configurado el token de Hugging Face.")
-        return None
+# --- Variables globales ---
+if 'df' not in st.session_state:
+    st.session_state['df'] = None
     
+# --- Funciones de EDA ---
+def perform_eda(df):
+    st.header("Análisis Exploratorio de Datos (EDA) 📊")
+    st.write(f"El conjunto de datos contiene {df.shape[0]} filas y {df.shape[1]} columnas.")
+    
+    st.subheader("Estadísticas Descriptivas")
+    st.write(df.describe(include='all'))
+    
+    st.subheader("Visualizaciones")
+    numerics = df.select_dtypes(include=['float64', 'int64']).columns
+    if not numerics.empty:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("Distribución de los 10 cultivos más importantes por área:")
+            area_df = df.dropna(subset=['Área Cosechada (ha)']).sort_values(by='Área Cosechada (ha)', ascending=False).head(10)
+            fig_bar = px.bar(area_df, x='Cultivo', y='Área Cosechada (ha)', title="Cultivos con Mayor Área Cosechada")
+            st.plotly_chart(fig_bar, use_container_width=True)
+        with col2:
+            st.write("Distribución de la producción por departamento:")
+            depto_df = df.dropna(subset=['Producción (t)']).groupby('Departamento')['Producción (t)'].sum().reset_index()
+            fig_pie = px.pie(depto_df, values='Producción (t)', names='Departamento', title="Producción Total por Departamento")
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+    st.subheader("Mapa de Correlación")
     try:
-        llm = HuggingFaceHub(
-            repo_id="google/flan-t5-xxl",
-            model_kwargs={"temperature": 0.5, "max_length": 512}
-        )
-        return llm
+        corr_matrix = df.select_dtypes(include=['float64', 'int64']).corr()
+        fig_corr = px.imshow(corr_matrix, text_auto=True, title="Mapa de Correlación")
+        st.plotly_chart(fig_corr, use_container_width=True)
     except Exception as e:
-        st.error(f"Error al inicializar el modelo de Hugging Face: {e}")
-        return None
+        st.error(f"No se pudo generar el mapa de correlación. Error: {e}")
 
-def create_agent(df_temp, llm):
-    """Crea un agente a partir de un DataFrame."""
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    df_temp.to_csv(temp_file.name, index=False)
+# --- Agente de IA sin RAG ---
+def create_agent_without_rag(token):
+    os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
+    llm = HuggingFaceHub(repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1", model_kwargs={"temperature": 0.5, "max_length": 64})
     
-    agent = create_csv_agent(llm, temp_file.name, verbose=True)
-    return agent, temp_file.name
+    @tool
+    def query_dataframe(query: str):
+        """Usa esta herramienta para consultar el dataframe sobre agricultura.
+           Puedes hacer preguntas como: '¿Cuál es el cultivo más producido en Cundinamarca?',
+           '¿Qué departamento tiene la mayor área cosechada de maíz?'."""
+        try:
+            return eval("st.session_state['df']" + query)
+        except Exception as e:
+            return f"Error al ejecutar la consulta: {e}. Asegúrate de que tu consulta sea válida."
 
-def create_retriever(df_temp):
-    """Crea un recuperador (retriever) para RAG a partir de un DataFrame."""
-    # Convertir el DataFrame a un formato de documento para el cargador
-    loader = DataFrameLoader(df_temp, page_content_column="cultivo")
-    documents = loader.load()
+    tools = [query_dataframe]
+    prompt = hub.pull("hwchase17/react")
+    agent = create_react_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
+    return agent_executor
+
+# --- Agente de IA con RAG ---
+def create_agent_with_rag(token):
+    os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
+    llm = HuggingFaceHub(repo_id="mistralai/Mixtral-8x7B-Instruct-v0.1", model_kwargs={"temperature": 0.5, "max_length": 64})
     
-    # Dividir el texto en "chunks" para la búsqueda
-    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-    docs = text_splitter.split_documents(documents)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    doc_text = st.session_state['df'].to_string(index=False)
+    docs = text_splitter.create_documents([doc_text])
     
-    # Crear embeddings y el vectorstore
     embeddings = HuggingFaceEmbeddings()
     vectorstore = FAISS.from_documents(docs, embeddings)
+    retriever = vectorstore.as_retriever()
     
-    return vectorstore.as_retriever()
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=retriever,
+        return_source_documents=True
+    )
+    return qa_chain
 
-# ===============================
-# Interfaz del Agente
-# ===============================
-st.divider()
-st.subheader("🤖 Agente de preguntas agrícolas (beta)")
+# --- Interfaz de usuario ---
+st.sidebar.title("Configuración ⚙️")
+huggingface_token = st.sidebar.text_input("Pega tu Secret de Hugging Face aquí", type="password")
+uploaded_file = st.sidebar.file_uploader("Sube un archivo CSV de agricultura", type="csv")
 
-# Elección de datos para el agente
-usar_filtros = st.toggle(
-    "Usar datos filtrados para el agente", 
-    value=True, 
-    help="Si está activo, el agente responde con base en el subconjunto de datos que has filtrado con los controles de arriba."
-)
-DATA_ACTUAL = df_f if usar_filtros else df
+if uploaded_file:
+    st.session_state['df'] = pd.read_csv(uploaded_file, encoding='latin-1')
+    st.session_state['df'].columns = [col.strip() for col in st.session_state['df'].columns]
+    st.sidebar.success("Archivo cargado exitosamente.")
+    
+tab1, tab2 = st.tabs(["Análisis de Datos (EDA) 📈", "Agente de IA 🤖"])
 
-tab_sin_rag, tab_con_rag = st.tabs(["Sin RAG", "Con RAG (Mejor contexto)"])
+with tab1:
+    if st.session_state['df'] is not None:
+        perform_eda(st.session_state['df'])
+    else:
+        st.info("Sube un archivo CSV en la barra lateral para comenzar el análisis.")
 
-# Agente sin RAG
-with tab_sin_rag:
-    st.info("Este agente puede realizar cálculos y responder preguntas sobre los datos, pero no usa un contexto de búsqueda adicional.")
-    user_question_no_rag = st.chat_input("Haz una pregunta sobre tus datos filtrados (ej. 'Cuál es el promedio de rendimiento?', 'cuántas fincas de café hay en Antioquia?')...")
-    if user_question_no_rag:
-        if huggingface_token and not DATA_ACTUAL.empty:
-            llm_hf = create_hf_llm(huggingface_token)
-            if llm_hf:
-                try:
-                    with st.spinner("Generando respuesta..."):
-                        agent, temp_path = create_agent(DATA_ACTUAL, llm_hf)
-                        response = agent.run(user_question_no_rag)
-                    st.markdown(f"**Tu pregunta:** {user_question_no_rag}")
-                    st.markdown(f"**Respuesta del agente:** {response}")
-                    os.unlink(temp_path) # Limpiar el archivo temporal
-                except Exception as e:
-                    st.error(f"Ocurrió un error al ejecutar el agente: {e}")
-        else:
-            st.warning("Por favor, ingresa tu token de Hugging Face y asegúrate de tener datos para analizar.")
-
-# Agente con RAG
-with tab_con_rag:
-    st.info("Este agente busca en la base de datos de documentos para encontrar el contexto más relevante antes de responder.")
-    user_question_rag = st.chat_input("Haz una pregunta contextual (ej. 'Dime más sobre los datos de la finca F0012', 'Explica los valores de NDVI para la región de Huila')...")
-    if user_question_rag:
-        if huggingface_token and not DATA_ACTUAL.empty:
-            llm_hf = create_hf_llm(huggingface_token)
-            if llm_hf:
-                try:
-                    with st.spinner("Buscando y generando respuesta..."):
-                        retriever = create_retriever(DATA_ACTUAL)
-                        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-                        qa_chain = ConversationalRetrievalChain.from_llm(
-                            llm_hf,
-                            retriever=retriever,
-                            memory=memory
-                        )
-                        response = qa_chain.run(user_question_rag)
-                    st.markdown(f"**Tu pregunta:** {user_question_rag}")
-                    st.markdown(f"**Respuesta del agente:** {response}")
-                except Exception as e:
-                    st.error(f"Ocurrió un error al ejecutar el agente con RAG: {e}")
-        else:
-            st.warning("Por favor, ingresa tu token de Hugging Face y asegúrate de tener datos para analizar.")
-                _, y_col = extra
-                _trend_chart(payload, y_col, title=y_col.replace("_", " ").upper())
-
-    st.session_state.agro_chat.append(("assistant", texto))
+with tab2:
+    if not huggingface_token:
+        st.warning("Pega tu secret de Hugging Face en la barra lateral para activar el agente.")
+    elif st.session_state['df'] is None:
+        st.info("Sube un archivo CSV para que el agente tenga datos sobre los que responder.")
+    else:
+        st.subheader("Elige el tipo de Agente")
+        agent_type = st.radio("Selecciona el modo del agente", ("Con RAG", "Sin RAG"))
+        
+        st.subheader("Pregúntale al Agente")
+        user_query = st.text_input("Ingresa tu pregunta sobre los datos de agricultura:")
+        
+        if st.button("Obtener Respuesta"):
+            if user_query:
+                with st.spinner("Generando respuesta..."):
+                    try:
+                        if agent_type == "Con RAG":
+                            qa_chain = create_agent_with_rag(huggingface_token)
+                            response = qa_chain({"query": user_query})
+                            st.write("### Respuesta del Agente:")
+                            st.write(response["result"])
+                        else:
+                            agent_executor = create_agent_without_rag(huggingface_token)
+                            response = agent_executor.invoke({"input": user_query})
+                            st.write("### Respuesta del Agente:")
+                            st.write(response["output"])
+                    except Exception as e:
+                        st.error(f"Ocurrió un error al generar la respuesta: {e}. Asegúrate de que el token sea válido y el modelo esté accesible.")
