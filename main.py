@@ -465,16 +465,31 @@ with cC:
 # =========================
 # 🤖 Agente de preguntas de agricultura (beta, mejorado)
 # =========================
+# 🤖 Agente de preguntas de agricultura (beta) con LLM y Token Hugging Face
 # =========================
-# 🤖 Agente de preguntas de agricultura (beta) con DeepSeek-V3.1
-# =========================
-from transformers import pipeline
-import json
-import unicodedata
-import re
+import json, unicodedata, re, os
+
+try:
+    from transformers import pipeline
+    _TRANSFORMERS_OK = True
+except Exception as _e:
+    _TRANSFORMERS_OK = False
+    _TRANSFORMERS_ERR = str(_e)
 
 st.divider()
 st.subheader("🤖 Agente de preguntas agrícolas (beta)")
+
+# --- Cuadro para el token HF ---
+with st.expander("🔑 Configuración de Hugging Face", expanded=False):
+    token_input = st.text_input(
+        "Pega tu Hugging Face Access Token (secreto)",
+        type="password",
+        help="Genera uno en https://huggingface.co/settings/tokens"
+    )
+    if token_input:
+        st.session_state["hf_token"] = token_input
+        os.environ["HF_TOKEN"] = token_input
+        st.success("✅ Token almacenado en la sesión.")
 
 # --- Preferencias del agente
 col_ag1, col_ag2 = st.columns([2, 3])
@@ -490,32 +505,11 @@ with col_ag1:
 with col_ag2:
     modo_detalle = st.radio("Nivel de detalle de respuesta", ["Resumido", "Completo"], horizontal=True)
 
-# Dataset activo según toggle
 DATA_ACTUAL = df_f if usar_filtros else df
 REGIONES = sorted(DATA_ACTUAL["region"].unique().tolist())
 CULTIVOS = sorted(DATA_ACTUAL["cultivo"].unique().tolist())
 
-# ---------- Helpers ya definidos antes (se usan aquí):
-# _normalize, _extract_entities, _subset, _advice_block, _describe_scope,
-# _render_table, _trend_chart, _bar_chart, _needs_cols, answer_question
-# (Asegúrate de que estén definidos como en tu script original.)
-
-# ---------- Carga del LLM (cacheada) ----------
-@st.cache_resource(show_spinner=True)
-def get_llm():
-    # Carga DeepSeek-V3.1; requiere memoria. Si te falta VRAM/RAM, cambia a un modelo más liviano.
-    return pipeline(
-        "text-generation",
-        model="deepseek-ai/DeepSeek-V3.1",
-        trust_remote_code=True,
-        device_map="auto",
-        torch_dtype="auto",
-        max_new_tokens=400,
-        do_sample=False,     # determinista
-        temperature=0.2,
-        top_p=0.9
-    )
-
+# ---------- Configuración del LLM ----------
 SYS_PROMPT = (
     "Eres un asistente que responde EXCLUSIVAMENTE sobre agricultura. "
     "Usa únicamente el CONTEXTO DE DATOS que te doy (estadísticas y muestras). "
@@ -524,11 +518,33 @@ SYS_PROMPT = (
     "Cita variables o campos relevantes de los datos cuando corresponda."
 )
 
+@st.cache_resource(show_spinner=True)
+def get_llm(token: str | None = None):
+    if not _TRANSFORMERS_OK:
+        return None
+    try:
+        # si hay token, lo pasamos explícitamente
+        auth = {"use_auth_token": token} if token else {}
+        return pipeline(
+            "text-generation",
+            model="deepseek-ai/DeepSeek-V3.1",
+            trust_remote_code=True,
+            device_map="auto",
+            torch_dtype="auto",
+            max_new_tokens=400,
+            do_sample=False,
+            temperature=0.2,
+            top_p=0.9,
+            **auth
+        )
+    except Exception as e:
+        st.warning(f"No pude inicializar el modelo (DeepSeek-V3.1): {e}")
+        return None
+
 def _contexto_compacto(d: pd.DataFrame, max_rows: int = 12) -> str:
-    """Resumen + pequeñas muestras para pasar como contexto al LLM."""
     if d.empty:
         return "No hay filas en el subconjunto actual."
-    desc = d[["rendimiento_t_ha", "lluvia_mm", "ndvi", "area_ha"]].describe().to_dict()
+    desc = d[["rendimiento_t_ha","lluvia_mm","ndvi","area_ha"]].describe().to_dict()
     sample = d.sample(min(len(d), max_rows), random_state=0)[
         ["fecha","finca_id","cultivo","region","lat","lon","area_ha",
          "rendimiento_t_ha","lluvia_mm","ndvi"]
@@ -536,13 +552,16 @@ def _contexto_compacto(d: pd.DataFrame, max_rows: int = 12) -> str:
     return json.dumps({
         "resumen_estadistico": desc,
         "muestras": sample.astype({
-            "fecha": "string","finca_id":"string","cultivo":"string","region":"string"
+            "fecha":"string","finca_id":"string","cultivo":"string","region":"string"
         }).to_dict(orient="records")
     }, ensure_ascii=False)
 
 def generate_llm_answer(question: str, d: pd.DataFrame, usar_filtros: bool, region: str | None, cultivo: str | None) -> str:
-    """Invoca DeepSeek-V3.1 con un contexto compacto del subset activo."""
-    pipe = get_llm()
+    token = st.session_state.get("hf_token")
+    pipe = get_llm(token)
+    if pipe is None:
+        return "⚠️ No hay modelo cargado. Verifica que `transformers` esté instalado y que hayas pegado tu token de Hugging Face."
+
     contexto = (
         f"Fuente: {'datos filtrados' if usar_filtros else 'todos los datos'} · "
         f"Región: {region or '—'} · Cultivo: {cultivo or '—'}\n"
@@ -552,12 +571,12 @@ def generate_llm_answer(question: str, d: pd.DataFrame, usar_filtros: bool, regi
         {"role": "system", "content": SYS_PROMPT},
         {"role": "user", "content": f"Pregunta: {question}\n\n{contexto}"}
     ]
-    out = pipe(messages)
     try:
+        out = pipe(messages)
         text = out[0]["generated_text"] if isinstance(out, list) else str(out)
-    except Exception:
-        text = str(out)
-    return text.strip()
+        return text.strip()
+    except Exception as e:
+        return f"No pude generar respuesta con el LLM: {e}"
 
 # --- Historial de chat
 if "agro_chat" not in st.session_state:
@@ -568,32 +587,28 @@ for role, content in st.session_state.agro_chat:
         st.markdown(content)
 
 # --- Entrada del usuario
-prompt = st.chat_input("Haz una pregunta (p. ej., 'Mejor fertilizante para café', 'Top 5 por rendimiento en Antioquia', 'Tendencia de NDVI para Maíz').")
+prompt = st.chat_input("Haz una pregunta (ej: 'Mejor fertilizante para café', 'Top 5 por rendimiento en Antioquia').")
 if prompt:
     st.session_state.agro_chat.append(("user", prompt))
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Detecta entidades y sub–conjunto según filtros
     region, cultivo = _extract_entities(prompt)
     d_sub = _subset(DATA_ACTUAL, region, cultivo)
 
-    # Puerta de “no-answer” cuando no hay datos
     if d_sub.empty:
         texto = "No tengo datos suficientes en la base actual para responder con confianza (subconjunto vacío)."
         payload, extra = None, None
     else:
         if usar_llm:
-            # Responder con LLM (DeepSeek-V3.1)
             texto = generate_llm_answer(prompt, d_sub, usar_filtros, region, cultivo)
             payload, extra = None, None
         else:
-            # Router heurístico existente (sin LLM)
             texto, payload, extra = answer_question(prompt, DATA_ACTUAL)
 
     with st.chat_message("assistant"):
         st.markdown(texto)
-        # Renderización adicional en caso de que el router heurístico haya devuelto payload/extra
+        # Renderizaciones extra (si usas answer_question heurístico)
         if extra is None:
             if isinstance(payload, pd.DataFrame):
                 _render_table(payload, ["finca_id","region","cultivo","rendimiento_t_ha","area_ha","ndvi","lluvia_mm"])
