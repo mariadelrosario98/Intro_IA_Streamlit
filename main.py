@@ -28,21 +28,24 @@ temperature = st.sidebar.slider("Temperatura del Modelo", min_value=0.0, max_val
 
 # --- Functions ---
 
+from langchain_community.llms import HuggingFaceEndpoint
+
 def load_llm(hf_token, temperature):
-    """Initializes and returns a Hugging Face Hub LLM."""
     if not hf_token:
         st.error("Por favor, ingresa tu Secret de Hugging Face en el sidebar.")
         return None
     try:
         os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
-        llm = HuggingFaceHub(
+        llm = HuggingFaceEndpoint(
             repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-            model_kwargs={"temperature": temperature, "max_length": 2048}
+            temperature=temperature,
+            max_new_tokens=512
         )
         return llm
     except Exception as e:
         st.error(f"Error al cargar el modelo: {e}")
         return None
+
 
 def run_rag_query(query, hf_token, temperature):
     """Runs a query with RAG using Wikipedia as the source."""
