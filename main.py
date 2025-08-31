@@ -4,14 +4,14 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
 import os
-from langchain_community.llms import HuggingFaceEndpoint
+from langchain_community.llms import HuggingFaceEndpoint   # ✅ solo usamos esta
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.agents import initialize_agent, AgentType, Tool
 from langchain_community.utilities import WikipediaAPIWrapper
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables (opcional si usas .env localmente)
 load_dotenv()
 
 # Set Streamlit page configuration
@@ -28,8 +28,6 @@ temperature = st.sidebar.slider("Temperatura del Modelo", min_value=0.0, max_val
 
 # --- Functions ---
 
-from langchain_community.llms import HuggingFaceEndpoint
-
 def load_llm(hf_token, temperature):
     """Initializes and returns a Hugging Face Hub LLM."""
     if not hf_token:
@@ -40,14 +38,12 @@ def load_llm(hf_token, temperature):
         llm = HuggingFaceEndpoint(
             repo_id="mistralai/Mistral-7B-Instruct-v0.2",
             temperature=temperature,
-            max_new_tokens=512  # ajusta según necesidad
+            max_new_tokens=512
         )
         return llm
     except Exception as e:
         st.error(f"Error al cargar el modelo: {e}")
         return None
-
-
 
 def run_rag_query(query, hf_token, temperature):
     """Runs a query with RAG using Wikipedia as the source."""
