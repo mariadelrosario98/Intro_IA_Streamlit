@@ -11,9 +11,6 @@ from langchain.agents import initialize_agent, AgentType, Tool
 from langchain_community.utilities import WikipediaAPIWrapper
 from dotenv import load_dotenv
 
-ImportError: Could not import wikipedia python package.
-Please install it with `pip install wikipedia`.
-
 # Load environment variables
 load_dotenv()
 
