@@ -4,14 +4,14 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
 import os
-from langchain_community.llms import HuggingFaceEndpoint   # ✅ solo usamos esta
+from langchain_community.llms import HuggingFaceHub   # ✅ volvemos a HuggingFaceHub
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.agents import initialize_agent, AgentType, Tool
 from langchain_community.utilities import WikipediaAPIWrapper
 from dotenv import load_dotenv
 
-# Load environment variables (opcional si usas .env localmente)
+# Load environment variables (opcional si usas .env en local)
 load_dotenv()
 
 # Set Streamlit page configuration
@@ -29,24 +29,28 @@ temperature = st.sidebar.slider("Temperatura del Modelo", min_value=0.0, max_val
 # --- Functions ---
 
 def load_llm(hf_token, temperature):
-    """Initializes and returns a Hugging Face Hub LLM."""
+    """Inicializa y retorna un modelo de Hugging Face Hub vía LangChain."""
     if not hf_token:
         st.error("Por favor, ingresa tu Secret de Hugging Face en el sidebar.")
         return None
     try:
         os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
-        llm = HuggingFaceEndpoint(
+        llm = HuggingFaceHub(
             repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-            temperature=temperature,
-            max_new_tokens=512
+            model_kwargs={
+                "temperature": temperature,
+                "max_new_tokens": 512,
+                "do_sample": True
+            }
         )
         return llm
     except Exception as e:
         st.error(f"Error al cargar el modelo: {e}")
         return None
 
+
 def run_rag_query(query, hf_token, temperature):
-    """Runs a query with RAG using Wikipedia as the source."""
+    """Ejecuta una consulta con RAG usando Wikipedia como fuente."""
     llm = load_llm(hf_token, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo para RAG."
@@ -73,8 +77,9 @@ def run_rag_query(query, hf_token, temperature):
         st.error(f"Error en la ejecución del agente RAG: {e}")
         return "Error al procesar la solicitud con RAG. Asegúrate de que tu token es válido y la API está disponible."
 
+
 def run_no_rag_query(query, hf_token, temperature):
-    """Runs a query without RAG, directly with the LLM."""
+    """Ejecuta una consulta sin RAG, directamente con el modelo LLM."""
     llm = load_llm(hf_token, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo."
@@ -91,6 +96,7 @@ def run_no_rag_query(query, hf_token, temperature):
     except Exception as e:
         st.error(f"Error en la ejecución del modelo sin RAG: {e}")
         return "Error al procesar la solicitud sin RAG."
+
 
 # --- Main App ---
 st.title("🚜 Herramienta de Análisis y QA sobre Agricultura")
