@@ -4,7 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
 import os
-from langchain_community.llms import HuggingFaceHub
+from langchain_community.llms import HuggingFaceEndpoint
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain.agents import initialize_agent, AgentType, Tool
