@@ -3,10 +3,12 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
-from huggingface_hub import InferenceClient   # ✅ cliente directo y estable
+from huggingface_hub import InferenceClient   # ✅ cliente oficial
 from langchain_community.utilities import WikipediaAPIWrapper
 
-# Set Streamlit page configuration
+# ======================
+# Configuración de página
+# ======================
 st.set_page_config(
     page_title="Herramienta de Análisis y QA sobre Agricultura",
     page_icon="🌱",
@@ -18,10 +20,10 @@ st.sidebar.title("🛠️ Configuración")
 hf_token = st.sidebar.text_input("Ingresa tu Secret de Hugging Face:", type="password")
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
-# --- Functions ---
+# --- Funciones ---
 
 def query_hf_model(hf_token, question, temperature=0.7):
-    """Consulta directa al modelo de HF sin pasar por LangChain."""
+    """Consulta directa al modelo de Hugging Face vía chat_completion."""
     if not hf_token:
         return "Error: No se proporcionó token de Hugging Face."
     try:
@@ -29,18 +31,17 @@ def query_hf_model(hf_token, question, temperature=0.7):
             "mistralai/Mistral-7B-Instruct-v0.2",
             token=hf_token
         )
-        response = client.text_generation(
-            question,
-            max_new_tokens=512,
-            temperature=temperature,
-            do_sample=True
+        response = client.chat_completion(
+            messages=[{"role": "user", "content": question}],
+            max_tokens=512,
+            temperature=temperature
         )
-        return response
+        return response.choices[0].message["content"]
     except Exception as e:
         return f"Error al consultar el modelo: {e}"
 
 def run_rag_query(question, hf_token, temperature):
-    """RAG manual: buscamos en Wikipedia y pasamos contexto al modelo HF."""
+    """RAG manual: busca contexto en Wikipedia y lo pasa al modelo."""
     try:
         wiki = WikipediaAPIWrapper()
         context = wiki.run(question)
@@ -49,11 +50,14 @@ def run_rag_query(question, hf_token, temperature):
     except Exception as e:
         return f"Error en RAG: {e}"
 
-# --- Main App ---
+# ======================
+# App principal
+# ======================
+
 st.title("🚜 Herramienta de Análisis y QA sobre Agricultura")
 st.subheader("Análisis Exploratorio de Datos (EDA) y Agente de Preguntas sobre Agricultura")
 
-# --- EDA Section ---
+# --- Sección EDA ---
 st.header("1. Exploración de Datos (EDA) de Agricultura")
 uploaded_file = st.file_uploader("Sube un archivo CSV sobre agricultura", type="csv")
 
@@ -64,22 +68,22 @@ if uploaded_file is not None:
         st.success("Archivo cargado exitosamente.")
         st.write("---")
         
-        # 1. Muestra del DataFrame
+        # Vista previa
         st.subheader("📊 Vista previa de los datos")
         st.dataframe(df.head())
         
-        # 2. Información General
+        # Información general
         st.subheader("ℹ️ Información del DataFrame")
         buffer = StringIO()
         df.info(buf=buffer)
         s = buffer.getvalue()
         st.text(s)
         
-        # 3. Estadísticas Descriptivas
+        # Estadísticas descriptivas
         st.subheader("📈 Estadísticas Descriptivas")
         st.write(df.describe())
         
-        # 4. Matriz de Correlación
+        # Matriz de correlación
         st.subheader("📉 Matriz de Correlación")
         numeric_df = df.select_dtypes(include=['number'])
         if not numeric_df.empty:
@@ -95,7 +99,7 @@ if uploaded_file is not None:
     except Exception as e:
         st.error(f"Ocurrió un error al procesar el archivo: {e}")
 
-# --- Questions Section ---
+# --- Sección Preguntas ---
 st.write("---")
 st.header("2. Agente de Preguntas sobre Agricultura")
 st.info("Este agente solo responde preguntas relacionadas con la agricultura. No podrá responder otras preguntas.")
@@ -112,11 +116,10 @@ if st.button("Obtener Respuesta"):
         with st.spinner("Generando respuesta con RAG..."):
             response_rag = run_rag_query(user_question, hf_token, temperature)
 
-        # Store responses in session state for later display
         st.session_state.llm_no_rag = response_no_rag
         st.session_state.llm_rag = response_rag
 
-# --- Comparison Tab Section ---
+# --- Comparación ---
 st.write("---")
 st.header("3. Comparación de Respuestas")
 if "llm_no_rag" in st.session_state and st.session_state.llm_no_rag and "llm_rag" in st.session_state and st.session_state.llm_rag:
