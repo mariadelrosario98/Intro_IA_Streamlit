@@ -3,16 +3,8 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
-import os
-from langchain_community.llms import HuggingFaceHub   # ✅ volvemos a HuggingFaceHub
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain.agents import initialize_agent, AgentType, Tool
+from huggingface_hub import InferenceClient   # ✅ cliente directo y estable
 from langchain_community.utilities import WikipediaAPIWrapper
-from dotenv import load_dotenv
-
-# Load environment variables (opcional si usas .env en local)
-load_dotenv()
 
 # Set Streamlit page configuration
 st.set_page_config(
@@ -24,79 +16,38 @@ st.set_page_config(
 # --- Sidebar ---
 st.sidebar.title("🛠️ Configuración")
 hf_token = st.sidebar.text_input("Ingresa tu Secret de Hugging Face:", type="password")
-temperature = st.sidebar.slider("Temperatura del Modelo", min_value=0.0, max_value=1.0, value=0.7, step=0.1)
+temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # --- Functions ---
 
-def load_llm(hf_token, temperature):
-    """Inicializa y retorna un modelo de Hugging Face Hub vía LangChain."""
+def query_hf_model(hf_token, question, temperature=0.7):
+    """Consulta directa al modelo de HF sin pasar por LangChain."""
     if not hf_token:
-        st.error("Por favor, ingresa tu Secret de Hugging Face en el sidebar.")
-        return None
+        return "Error: No se proporcionó token de Hugging Face."
     try:
-        os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token
-        llm = HuggingFaceHub(
-            repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-            model_kwargs={
-                "temperature": temperature,
-                "max_new_tokens": 512,
-                "do_sample": True
-            }
+        client = InferenceClient(
+            "mistralai/Mistral-7B-Instruct-v0.2",
+            token=hf_token
         )
-        return llm
-    except Exception as e:
-        st.error(f"Error al cargar el modelo: {e}")
-        return None
-
-
-def run_rag_query(query, hf_token, temperature):
-    """Ejecuta una consulta con RAG usando Wikipedia como fuente."""
-    llm = load_llm(hf_token, temperature)
-    if not llm:
-        return "Error: No se pudo cargar el modelo para RAG."
-
-    wikipedia_tool = WikipediaAPIWrapper()
-    tools = [Tool(
-        name="Wikipedia",
-        func=wikipedia_tool.run,
-        description="Útil para buscar información en Wikipedia."
-    )]
-
-    agent = initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        handle_parsing_errors=True,
-        verbose=False
-    )
-    
-    try:
-        response = agent.run(f"Responde la siguiente pregunta sobre agricultura, usando solo fuentes de Wikipedia: {query}")
+        response = client.text_generation(
+            question,
+            max_new_tokens=512,
+            temperature=temperature,
+            do_sample=True
+        )
         return response
     except Exception as e:
-        st.error(f"Error en la ejecución del agente RAG: {e}")
-        return "Error al procesar la solicitud con RAG. Asegúrate de que tu token es válido y la API está disponible."
+        return f"Error al consultar el modelo: {e}"
 
-
-def run_no_rag_query(query, hf_token, temperature):
-    """Ejecuta una consulta sin RAG, directamente con el modelo LLM."""
-    llm = load_llm(hf_token, temperature)
-    if not llm:
-        return "Error: No se pudo cargar el modelo."
-
-    prompt_template = PromptTemplate(
-        input_variables=["pregunta"],
-        template="Eres un experto en agricultura. Responde de manera concisa a la siguiente pregunta: {pregunta}"
-    )
-    chain = LLMChain(llm=llm, prompt=prompt_template)
-    
+def run_rag_query(question, hf_token, temperature):
+    """RAG manual: buscamos en Wikipedia y pasamos contexto al modelo HF."""
     try:
-        response = chain.run(query)
-        return response
+        wiki = WikipediaAPIWrapper()
+        context = wiki.run(question)
+        enriched_prompt = f"Contexto de Wikipedia:\n{context}\n\nPregunta: {question}\nRespuesta:"
+        return query_hf_model(hf_token, enriched_prompt, temperature)
     except Exception as e:
-        st.error(f"Error en la ejecución del modelo sin RAG: {e}")
-        return "Error al procesar la solicitud sin RAG."
-
+        return f"Error en RAG: {e}"
 
 # --- Main App ---
 st.title("🚜 Herramienta de Análisis y QA sobre Agricultura")
@@ -156,11 +107,11 @@ if st.button("Obtener Respuesta"):
         st.warning("Por favor, ingresa tu Secret de Hugging Face en el sidebar para continuar.")
     else:
         with st.spinner("Generando respuesta sin RAG..."):
-            response_no_rag = run_no_rag_query(user_question, hf_token, temperature)
-        
+            response_no_rag = query_hf_model(hf_token, user_question, temperature)
+
         with st.spinner("Generando respuesta con RAG..."):
             response_rag = run_rag_query(user_question, hf_token, temperature)
-        
+
         # Store responses in session state for later display
         st.session_state.llm_no_rag = response_no_rag
         st.session_state.llm_rag = response_rag
