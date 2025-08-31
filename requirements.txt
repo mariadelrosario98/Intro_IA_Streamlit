@@ -10,3 +10,8 @@ langchain_openai
 faiss-cpu
 langchainhub
 bs4
+wikipedia
+huggingface_hub
+langchain
+langchain-community
+
