@@ -7,6 +7,7 @@ import concurrent.futures
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.utilities import WikipediaAPIWrapper
+from langchain_experimental.agents import create_pandas_dataframe_agent
 
 # ======================
 # Configuración de página
@@ -21,19 +22,14 @@ st.set_page_config(
 st.sidebar.title("🛠️ Configuración")
 groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):", type="password")
 
-model_name = st.sidebar.selectbox(
-    "Modelo Groq:",
-    [
-        "llama-3.1-8b-instant"      # ✅ recomendado para velocidad
-    ],
-    index=0
-)
+# 🔹 Usamos solo un modelo rápido y vigente
+MODEL_NAME = "llama-3.1-8b-instant"
 
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # --- Funciones ---
 
-def load_llm(api_key, temperature, model_name):
+def load_llm(api_key, temperature, model_name=MODEL_NAME):
     """Inicializa y retorna el modelo en Groq."""
     if not api_key:
         st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
@@ -49,9 +45,9 @@ def load_llm(api_key, temperature, model_name):
         return None
 
 
-def run_no_rag_query(query, api_key, temperature, model_name):
+def run_no_rag_query(query, api_key, temperature):
     """Consulta directa sin RAG."""
-    llm = load_llm(api_key, temperature, model_name)
+    llm = load_llm(api_key, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo."
 
@@ -67,9 +63,9 @@ def run_no_rag_query(query, api_key, temperature, model_name):
         return f"Error en la ejecución sin RAG: {e}"
 
 
-def run_rag_query(query, api_key, temperature, model_name):
+def run_rag_query(query, api_key, temperature):
     """RAG simplificado: buscar en Wikipedia y pasar resumen al modelo."""
-    llm = load_llm(api_key, temperature, model_name)
+    llm = load_llm(api_key, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo para RAG."
 
@@ -88,62 +84,23 @@ def run_rag_query(query, api_key, temperature, model_name):
         return f"Error en RAG: {e}"
 
 
-def run_csv_query(query, df, api_key, temperature, model_name):
-    """Responde preguntas en contexto usando el CSV subido."""
-    llm = load_llm(api_key, temperature, model_name)
+def run_csv_agent_query(query, df, api_key, temperature):
+    """Responde preguntas usando un agente multipropósito sobre el CSV."""
+    llm = load_llm(api_key, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo."
 
-    preview = df.head(20).to_string()
-
-    context = f"""
-    Tienes acceso a un dataset de agricultura con estas columnas: {', '.join(df.columns)}.
-    Aquí van las primeras filas como referencia:
-    {preview}
-    """
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Eres un experto en análisis de datos y agricultura."),
-        ("user", f"{context}\n\nPregunta: {query}")
-    ])
-
-    chain = prompt | llm
     try:
-        return chain.invoke({}).content
+        agent = create_pandas_dataframe_agent(
+            llm,
+            df,
+            verbose=False,
+            handle_parsing_errors=True
+        )
+        response = agent.run(query)
+        return response
     except Exception as e:
-        return f"Error en CSV Query: {e}"
-
-
-def analyze_cultivo(query, df):
-    """Analiza dinámicamente el cultivo mencionado en la pregunta."""
-    cultivos_disponibles = df['cultivo'].str.lower().unique()
-    cultivo_detectado = None
-    for c in cultivos_disponibles:
-        if c in query.lower():
-            cultivo_detectado = c
-            break
-
-    if not cultivo_detectado:
-        return None, "⚠️ No se pudo detectar un cultivo en tu pregunta.", None
-
-    cultivo_df = df[df['cultivo'].str.lower() == cultivo_detectado]
-    if cultivo_df.empty:
-        return None, f"⚠️ No se encontraron datos para {cultivo_detectado}.", None
-
-    rendimiento_por_region = (
-        cultivo_df.groupby('region')['rendimiento_t_ha']
-        .sum()
-        .reset_index()
-        .sort_values(by='rendimiento_t_ha', ascending=False)
-    )
-
-    top_region = rendimiento_por_region.iloc[0]
-
-    texto = (f"🌱 Cultivo analizado: **{cultivo_detectado.title()}**\n\n"
-             f"🌍 Región líder: **{top_region['region']}** con "
-             f"**{top_region['rendimiento_t_ha']:.2f} t/ha**")
-
-    return rendimiento_por_region, texto, cultivo_detectado
+        return f"Error en el agente CSV: {e}"
 
 # ======================
 # App principal
@@ -191,9 +148,9 @@ if uploaded_file is not None:
 # --- Sección Preguntas ---
 st.write("---")
 st.header("2. Comparación de Respuestas (paralelo)")
-st.info("Se generarán tres respuestas en paralelo: sin RAG, con RAG (Wikipedia) y con datos del CSV + análisis de cultivos.")
+st.info("Respuestas en paralelo: sin RAG, con RAG (Wikipedia) y con agente multipropósito sobre CSV.")
 
-user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuál región produce más papa o café?")
+user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuál región produce más maíz y papa?")
 
 if st.button("Obtener Respuestas"):
     if not groq_api_key:
@@ -201,10 +158,10 @@ if st.button("Obtener Respuestas"):
     else:
         with st.spinner("Generando respuestas en paralelo..."):
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future_no_rag = executor.submit(run_no_rag_query, user_question, groq_api_key, temperature, model_name)
-                future_rag = executor.submit(run_rag_query, user_question, groq_api_key, temperature, model_name)
+                future_no_rag = executor.submit(run_no_rag_query, user_question, groq_api_key, temperature)
+                future_rag = executor.submit(run_rag_query, user_question, groq_api_key, temperature)
                 if df is not None:
-                    future_csv = executor.submit(run_csv_query, user_question, df, groq_api_key, temperature, model_name)
+                    future_csv = executor.submit(run_csv_agent_query, user_question, df, groq_api_key, temperature)
                 else:
                     future_csv = None
 
@@ -215,16 +172,6 @@ if st.button("Obtener Respuestas"):
             st.session_state.llm_no_rag = response_no_rag
             st.session_state.llm_rag = response_rag
             st.session_state.llm_csv = response_csv
-
-            # --- Análisis multipropósito de cultivos ---
-            if df is not None:
-                tabla, texto, cultivo = analyze_cultivo(user_question, df)
-                if tabla is not None:
-                    st.write("---")
-                    st.subheader(f"📊 Análisis del cultivo detectado: {cultivo.title()}")
-                    st.write(texto)
-                    st.dataframe(tabla)
-                    st.bar_chart(tabla.set_index('region'))
 
 # --- Comparación lado a lado ---
 if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state and "llm_csv" in st.session_state:
@@ -237,9 +184,9 @@ if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state and "llm_c
         st.info(st.session_state.llm_no_rag)
         
     with col2:
-        st.subheader("Con RAG)")
+        st.subheader("Con RAG (Wikipedia)")
         st.info(st.session_state.llm_rag)
 
     with col3:
-        st.subheader("Con CSV")
+        st.subheader("Con CSV (Agente multipropósito)")
         st.info(st.session_state.llm_csv)
