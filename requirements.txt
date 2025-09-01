@@ -2,8 +2,9 @@ streamlit
 pandas
 seaborn
 matplotlib
-langchain>=0.2.0
-langchain-community>=0.2.0
+langchain
+langchain-community
 langchain-groq
+langchain-experimental
 wikipedia
 python-dotenv
