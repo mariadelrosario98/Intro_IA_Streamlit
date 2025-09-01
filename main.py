@@ -24,7 +24,6 @@ groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):
 model_name = st.sidebar.selectbox(
     "Modelo Groq:",
     [
-        "llama-3.1-70b-versatile",  # ✅ recomendado para calidad
         "llama-3.1-8b-instant"      # ✅ recomendado para velocidad
     ],
     index=0
