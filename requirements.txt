@@ -2,8 +2,8 @@ streamlit
 pandas
 seaborn
 matplotlib
-huggingface_hub>=0.23.0
 langchain>=0.2.0
 langchain-community>=0.2.0
+langchain-groq
 wikipedia
 python-dotenv
