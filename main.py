@@ -24,6 +24,7 @@ groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):
 model_name = st.sidebar.selectbox(
     "Modelo Groq:",
     [
+        "llama-3.1-70b-versatile",  # ✅ recomendado para calidad
         "llama-3.1-8b-instant"      # ✅ recomendado para velocidad
     ],
     index=0
@@ -113,6 +114,38 @@ def run_csv_query(query, df, api_key, temperature, model_name):
     except Exception as e:
         return f"Error en CSV Query: {e}"
 
+
+def analyze_cultivo(query, df):
+    """Analiza dinámicamente el cultivo mencionado en la pregunta."""
+    cultivos_disponibles = df['cultivo'].str.lower().unique()
+    cultivo_detectado = None
+    for c in cultivos_disponibles:
+        if c in query.lower():
+            cultivo_detectado = c
+            break
+
+    if not cultivo_detectado:
+        return None, "⚠️ No se pudo detectar un cultivo en tu pregunta.", None
+
+    cultivo_df = df[df['cultivo'].str.lower() == cultivo_detectado]
+    if cultivo_df.empty:
+        return None, f"⚠️ No se encontraron datos para {cultivo_detectado}.", None
+
+    rendimiento_por_region = (
+        cultivo_df.groupby('region')['rendimiento_t_ha']
+        .sum()
+        .reset_index()
+        .sort_values(by='rendimiento_t_ha', ascending=False)
+    )
+
+    top_region = rendimiento_por_region.iloc[0]
+
+    texto = (f"🌱 Cultivo analizado: **{cultivo_detectado.title()}**\n\n"
+             f"🌍 Región líder: **{top_region['region']}** con "
+             f"**{top_region['rendimiento_t_ha']:.2f} t/ha**")
+
+    return rendimiento_por_region, texto, cultivo_detectado
+
 # ======================
 # App principal
 # ======================
@@ -152,15 +185,16 @@ if uploaded_file is not None:
             st.pyplot(plt)
         else:
             st.warning("No hay columnas numéricas para calcular la matriz de correlación.")
+
     except Exception as e:
         st.error(f"Ocurrió un error al procesar el archivo: {e}")
 
 # --- Sección Preguntas ---
 st.write("---")
 st.header("2. Comparación de Respuestas (paralelo)")
-st.info("Se generarán tres respuestas en paralelo: sin RAG, con RAG (Wikipedia) y con datos del CSV.")
+st.info("Se generarán tres respuestas en paralelo: sin RAG, con RAG (Wikipedia) y con datos del CSV + análisis de cultivos.")
 
-user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuáles son los beneficios de la rotación de cultivos?")
+user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuál región produce más papa o café?")
 
 if st.button("Obtener Respuestas"):
     if not groq_api_key:
@@ -182,6 +216,16 @@ if st.button("Obtener Respuestas"):
             st.session_state.llm_no_rag = response_no_rag
             st.session_state.llm_rag = response_rag
             st.session_state.llm_csv = response_csv
+
+            # --- Análisis multipropósito de cultivos ---
+            if df is not None:
+                tabla, texto, cultivo = analyze_cultivo(user_question, df)
+                if tabla is not None:
+                    st.write("---")
+                    st.subheader(f"📊 Análisis del cultivo detectado: {cultivo.title()}")
+                    st.write(texto)
+                    st.dataframe(tabla)
+                    st.bar_chart(tabla.set_index('region'))
 
 # --- Comparación lado a lado ---
 if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state and "llm_csv" in st.session_state:
