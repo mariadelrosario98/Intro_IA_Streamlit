@@ -8,7 +8,6 @@ from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain.agents import initialize_agent, AgentType, Tool
 
 # ======================
 # Configuración de página
@@ -71,30 +70,24 @@ def run_no_rag_query(query, api_key, temperature, model_name):
 
 
 def run_rag_query(query, api_key, temperature):
-    """Siempre usa un modelo rápido para RAG."""
+    """RAG simplificado: buscar en Wikipedia y pasar resumen al modelo."""
     llm = load_llm(api_key, temperature, "llama-3.1-8b-instant")
     if not llm:
         return "Error: No se pudo cargar el modelo para RAG."
 
-    # limitar resultados de Wikipedia
-    wikipedia_tool = WikipediaAPIWrapper(top_k_results=2, doc_content_chars_max=1000)
-    tools = [Tool(
-        name="Wikipedia",
-        func=wikipedia_tool.run,
-        description="Útil para buscar información en Wikipedia."
-    )]
-
-    agent = initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        handle_parsing_errors=True,
-        verbose=False
-    )
     try:
-        return agent.run(f"Responde la siguiente pregunta sobre agricultura usando Wikipedia: {query}")
+        wiki = WikipediaAPIWrapper(top_k_results=2, doc_content_chars_max=1000)
+        context = wiki.run(query)
+        enriched_prompt = f"Contexto de Wikipedia:\n{context}\n\nPregunta: {query}\nRespuesta:"
+        
+        prompt_template = PromptTemplate(
+            input_variables=["pregunta"],
+            template="{pregunta}"
+        )
+        chain = LLMChain(llm=llm, prompt=prompt_template)
+        return chain.run(enriched_prompt)
     except Exception as e:
-        return f"Error en la ejecución con RAG: {e}"
+        return f"Error en RAG: {e}"
 
 # ======================
 # App principal
@@ -141,7 +134,7 @@ if uploaded_file is not None:
 # --- Sección Preguntas ---
 st.write("---")
 st.header("2. Comparación de Respuestas (paralelo)")
-st.info("Se ejecutarán en paralelo: una respuesta directa (sin RAG) y otra con RAG (Wikipedia).")
+st.info("Ejecutaremos en paralelo la respuesta directa y la respuesta con RAG (Wikipedia).")
 
 user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuáles son los beneficios de la rotación de cultivos?")
 
@@ -159,16 +152,16 @@ if st.button("Obtener Respuestas"):
             st.session_state.llm_no_rag = response_no_rag
             st.session_state.llm_rag = response_rag
 
-# --- Comparación ---
+# --- Comparación lado a lado ---
 if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state:
     st.write("---")
     st.header("3. Resultados lado a lado")
-    tab1, tab2 = st.tabs(["Sin RAG", "Con RAG"])
+    col1, col2 = st.columns(2)
     
-    with tab1:
+    with col1:
         st.subheader("Respuesta sin RAG")
         st.info(st.session_state.llm_no_rag)
         
-    with tab2:
+    with col2:
         st.subheader("Respuesta con RAG (Wikipedia)")
         st.info(st.session_state.llm_rag)
