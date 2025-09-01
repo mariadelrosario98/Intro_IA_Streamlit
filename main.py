@@ -135,22 +135,24 @@ if uploaded_file is not None:
             st.warning("No hay columnas numéricas para calcular la matriz de correlación.")
 
         # --- NUEVA PARTE: mapa interactivo ---
-        if "lat" in df.columns and "lon" in df.columns:
+        lat_candidates = [c for c in df.columns if "lat" in c.lower()]
+        lon_candidates = [c for c in df.columns if "lon" in c.lower()]
+
+        if lat_candidates and lon_candidates:
+            lat_col, lon_col = lat_candidates[0], lon_candidates[0]
+
             st.subheader("🌍 Mapa de fincas por cultivo")
             cultivos = df['cultivo'].dropna().unique().tolist()
             cultivo_sel = st.selectbox("Selecciona un cultivo:", ["Todos"] + cultivos)
 
-            if cultivo_sel != "Todos":
-                df_map = df[df['cultivo'] == cultivo_sel]
-            else:
-                df_map = df
+            df_map = df if cultivo_sel == "Todos" else df[df['cultivo'] == cultivo_sel]
 
             if not df_map.empty:
                 st.pydeck_chart(pdk.Deck(
                     map_style="mapbox://styles/mapbox/light-v9",
                     initial_view_state=pdk.ViewState(
-                        latitude=df_map['lat'].mean(),
-                        longitude=df_map['lon'].mean(),
+                        latitude=df_map[lat_col].mean() if not df_map.empty else 4.5709,
+                        longitude=df_map[lon_col].mean() if not df_map.empty else -74.2973,
                         zoom=6,
                         pitch=0,
                     ),
@@ -158,13 +160,14 @@ if uploaded_file is not None:
                         pdk.Layer(
                             "ScatterplotLayer",
                             data=df_map,
-                            get_position='[lon, lat]',
+                            get_position=f'[{lon_col}, {lat_col}]',
                             get_color='[200, 30, 0, 160]',
                             get_radius=20000,
                             pickable=True
                         )
                     ],
                     tooltip={"text": "Cultivo: {cultivo}\nRegión: {region}\nRendimiento: {rendimiento_t_ha}"}
+                    if "region" in df.columns else {"text": "Cultivo: {cultivo}"}
                 ))
             else:
                 st.warning("No hay datos para ese cultivo seleccionado.")
