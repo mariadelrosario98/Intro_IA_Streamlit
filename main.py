@@ -21,15 +21,22 @@ st.set_page_config(
 # --- Sidebar ---
 st.sidebar.title("🛠️ Configuración")
 groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):", type="password")
-temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
-# Modelo fijo recomendado (Groq)
-MODEL_NAME = "llama-3.1-70b"   # ✅ nombre correcto
+model_name = st.sidebar.selectbox(
+    "Modelo Groq:",
+    [
+        "llama-3.1-70b-versatile",  # ✅ recomendado para calidad
+        "llama-3.1-8b-instant"      # ✅ recomendado para velocidad
+    ],
+    index=0
+)
+
+temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # --- Funciones ---
 
-def load_llm(api_key, temperature, model_name=MODEL_NAME):
-    """Inicializa y retorna LLaMA-3.1-70B en Groq."""
+def load_llm(api_key, temperature, model_name):
+    """Inicializa y retorna el modelo en Groq."""
     if not api_key:
         st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
         return None
@@ -45,7 +52,7 @@ def load_llm(api_key, temperature, model_name=MODEL_NAME):
         return None
 
 
-def run_no_rag_query(query, api_key, temperature, model_name=MODEL_NAME):
+def run_no_rag_query(query, api_key, temperature, model_name):
     """Consulta directa sin RAG."""
     llm = load_llm(api_key, temperature, model_name)
     if not llm:
@@ -61,7 +68,7 @@ def run_no_rag_query(query, api_key, temperature, model_name=MODEL_NAME):
         return f"Error en la ejecución sin RAG: {e}"
 
 
-def run_rag_query(query, api_key, temperature, model_name=MODEL_NAME):
+def run_rag_query(query, api_key, temperature, model_name):
     """RAG simplificado: buscar en Wikipedia y pasar resumen al modelo."""
     llm = load_llm(api_key, temperature, model_name)
     if not llm:
@@ -82,7 +89,7 @@ def run_rag_query(query, api_key, temperature, model_name=MODEL_NAME):
         return f"Error en RAG: {e}"
 
 
-def run_csv_query(query, df, api_key, temperature, model_name=MODEL_NAME):
+def run_csv_query(query, df, api_key, temperature, model_name):
     """Responde preguntas en contexto usando el CSV subido."""
     llm = load_llm(api_key, temperature, model_name)
     if not llm:
@@ -163,10 +170,10 @@ if st.button("Obtener Respuestas"):
     else:
         with st.spinner("Generando respuestas en paralelo..."):
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future_no_rag = executor.submit(run_no_rag_query, user_question, groq_api_key, temperature, MODEL_NAME)
-                future_rag = executor.submit(run_rag_query, user_question, groq_api_key, temperature, MODEL_NAME)
+                future_no_rag = executor.submit(run_no_rag_query, user_question, groq_api_key, temperature, model_name)
+                future_rag = executor.submit(run_rag_query, user_question, groq_api_key, temperature, model_name)
                 if df is not None:
-                    future_csv = executor.submit(run_csv_query, user_question, df, groq_api_key, temperature, MODEL_NAME)
+                    future_csv = executor.submit(run_csv_query, user_question, df, groq_api_key, temperature, model_name)
                 else:
                     future_csv = None
 
