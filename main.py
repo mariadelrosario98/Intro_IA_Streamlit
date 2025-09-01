@@ -21,40 +21,32 @@ st.set_page_config(
 # --- Sidebar ---
 st.sidebar.title("🛠️ Configuración")
 groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):", type="password")
-
-model_name = st.sidebar.selectbox(
-    "Modelo para respuesta directa (sin RAG):",
-    [
-        "llama-3.1-8b-instant",
-        "llama-3.1-70b",
-        "llama-3.2-1b",
-        "llama-3.2-3b",
-        "llama-3.2-11b",
-        "llama-3.2-90b"
-    ],
-    index=0
-)
-
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
+
+# Modelo fijo recomendado (Groq)
+MODEL_NAME = "llama-3.1-70b-8192"
 
 # --- Funciones ---
 
-def load_llm(api_key, temperature, model_name):
+def load_llm(api_key, temperature, model_name=MODEL_NAME):
+    """Inicializa y retorna LLaMA-3.1-70B en Groq."""
     if not api_key:
         st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
         return None
     try:
-        return ChatGroq(
+        llm = ChatGroq(
             api_key=api_key,
             model_name=model_name,
             temperature=temperature
         )
+        return llm
     except Exception as e:
         st.error(f"Error al cargar el modelo Groq: {e}")
         return None
 
 
-def run_no_rag_query(query, api_key, temperature, model_name):
+def run_no_rag_query(query, api_key, temperature, model_name=MODEL_NAME):
+    """Consulta directa sin RAG."""
     llm = load_llm(api_key, temperature, model_name)
     if not llm:
         return "Error: No se pudo cargar el modelo."
@@ -69,9 +61,9 @@ def run_no_rag_query(query, api_key, temperature, model_name):
         return f"Error en la ejecución sin RAG: {e}"
 
 
-def run_rag_query(query, api_key, temperature):
+def run_rag_query(query, api_key, temperature, model_name=MODEL_NAME):
     """RAG simplificado: buscar en Wikipedia y pasar resumen al modelo."""
-    llm = load_llm(api_key, temperature, "llama-3.1-8b-instant")
+    llm = load_llm(api_key, temperature, model_name)
     if not llm:
         return "Error: No se pudo cargar el modelo para RAG."
 
@@ -89,6 +81,32 @@ def run_rag_query(query, api_key, temperature):
     except Exception as e:
         return f"Error en RAG: {e}"
 
+
+def run_csv_query(query, df, api_key, temperature, model_name=MODEL_NAME):
+    """Responde preguntas en contexto usando el CSV subido."""
+    llm = load_llm(api_key, temperature, model_name)
+    if not llm:
+        return "Error: No se pudo cargar el modelo."
+
+    # Convertimos las primeras filas a texto
+    preview = df.head(20).to_string()
+
+    enriched_prompt = f"""
+    Tienes acceso a un dataset de agricultura con estas columnas: {', '.join(df.columns)}.
+    Aquí van las primeras filas como referencia:
+    {preview}
+
+    Ahora responde a la pregunta del usuario, usando solo la información del dataset:
+    {query}
+    """
+
+    prompt_template = PromptTemplate(
+        input_variables=["pregunta"],
+        template="{pregunta}"
+    )
+    chain = LLMChain(llm=llm, prompt=prompt_template)
+    return chain.run(enriched_prompt)
+
 # ======================
 # App principal
 # ======================
@@ -100,6 +118,7 @@ st.subheader("Análisis Exploratorio de Datos (EDA) y Comparación de Respuestas
 st.header("1. Exploración de Datos (EDA) de Agricultura")
 uploaded_file = st.file_uploader("Sube un archivo CSV sobre agricultura", type="csv")
 
+df = None
 if uploaded_file is not None:
     try:
         df = pd.read_csv(uploaded_file)
@@ -134,7 +153,7 @@ if uploaded_file is not None:
 # --- Sección Preguntas ---
 st.write("---")
 st.header("2. Comparación de Respuestas (paralelo)")
-st.info("Ejecutaremos en paralelo la respuesta directa y la respuesta con RAG (Wikipedia).")
+st.info("Se generarán tres respuestas en paralelo: sin RAG, con RAG (Wikipedia) y con datos del CSV.")
 
 user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuáles son los beneficios de la rotación de cultivos?")
 
@@ -144,24 +163,35 @@ if st.button("Obtener Respuestas"):
     else:
         with st.spinner("Generando respuestas en paralelo..."):
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                future_no_rag = executor.submit(run_no_rag_query, user_question, groq_api_key, temperature, model_name)
-                future_rag = executor.submit(run_rag_query, user_question, groq_api_key, temperature)
+                future_no_rag = executor.submit(run_no_rag_query, user_question, groq_api_key, temperature, MODEL_NAME)
+                future_rag = executor.submit(run_rag_query, user_question, groq_api_key, temperature, MODEL_NAME)
+                if df is not None:
+                    future_csv = executor.submit(run_csv_query, user_question, df, groq_api_key, temperature, MODEL_NAME)
+                else:
+                    future_csv = None
+
                 response_no_rag = future_no_rag.result()
                 response_rag = future_rag.result()
+                response_csv = future_csv.result() if future_csv else "No se ha cargado ningún CSV."
 
             st.session_state.llm_no_rag = response_no_rag
             st.session_state.llm_rag = response_rag
+            st.session_state.llm_csv = response_csv
 
 # --- Comparación lado a lado ---
-if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state:
+if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state and "llm_csv" in st.session_state:
     st.write("---")
     st.header("3. Resultados lado a lado")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.subheader("Respuesta sin RAG")
+        st.subheader("Sin RAG")
         st.info(st.session_state.llm_no_rag)
         
     with col2:
-        st.subheader("Respuesta con RAG (Wikipedia)")
+        st.subheader("Con RAG (Wikipedia)")
         st.info(st.session_state.llm_rag)
+
+    with col3:
+        st.subheader("Con CSV")
+        st.info(st.session_state.llm_csv)
