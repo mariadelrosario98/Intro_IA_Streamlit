@@ -95,7 +95,8 @@ def run_csv_agent_query(query, df, api_key, temperature):
             llm,
             df,
             verbose=False,
-            handle_parsing_errors=True
+            handle_parsing_errors=True,
+            allow_dangerous_code=True  # ✅ Habilitamos ejecución de pandas/matplotlib
         )
         response = agent.run(query)
         return response
