@@ -4,6 +4,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
 import concurrent.futures
+import pydeck as pdk
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.utilities import WikipediaAPIWrapper
@@ -22,83 +23,73 @@ st.set_page_config(
 st.sidebar.title("🛠️ Configuración")
 groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):", type="password")
 
-# 🔹 Usamos solo un modelo rápido y vigente
 MODEL_NAME = "llama-3.1-8b-instant"
-
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
-# --- Funciones ---
+# ======================
+# Funciones auxiliares
+# ======================
 
 def load_llm(api_key, temperature, model_name=MODEL_NAME):
-    """Inicializa y retorna el modelo en Groq."""
     if not api_key:
         st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
         return None
     try:
-        return ChatGroq(
-            api_key=api_key,
-            model_name=model_name,
-            temperature=temperature
-        )
+        return ChatGroq(api_key=api_key, model_name=model_name, temperature=temperature)
     except Exception as e:
         st.error(f"Error al cargar el modelo Groq: {e}")
         return None
 
-
 def run_no_rag_query(query, api_key, temperature):
-    """Consulta directa sin RAG."""
     llm = load_llm(api_key, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo."
-
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Eres un experto en agricultura. Responde de manera concisa."),
         ("user", "{pregunta}")
     ])
-
     chain = prompt | llm
     try:
         return chain.invoke({"pregunta": query}).content
     except Exception as e:
         return f"Error en la ejecución sin RAG: {e}"
 
-
 def run_rag_query(query, api_key, temperature):
-    """RAG simplificado: buscar en Wikipedia y pasar resumen al modelo."""
     llm = load_llm(api_key, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo para RAG."
-
     try:
         wiki = WikipediaAPIWrapper(top_k_results=2, doc_content_chars_max=1000)
         context = wiki.run(query)
-
         prompt = ChatPromptTemplate.from_messages([
             ("system", "Eres un experto en agricultura. Usa el contexto de Wikipedia para responder."),
             ("user", f"Contexto: {context}\n\nPregunta: {query}")
         ])
-
         chain = prompt | llm
         return chain.invoke({}).content
     except Exception as e:
         return f"Error en RAG: {e}"
 
-
 def run_csv_agent_query(query, df, api_key, temperature):
-    """Responde preguntas usando un agente multipropósito sobre el CSV."""
     llm = load_llm(api_key, temperature)
     if not llm:
         return "Error: No se pudo cargar el modelo."
-
     try:
         agent = create_pandas_dataframe_agent(
             llm,
             df,
             verbose=False,
             handle_parsing_errors=True,
-            allow_dangerous_code=True  # ✅ Habilitamos ejecución de pandas/matplotlib
+            allow_dangerous_code=True
         )
         response = agent.run(query)
+
+        # Capturar gráficos automáticos
+        fig = plt.gcf()
+        if fig and fig.get_axes():
+            st.pyplot(fig)
+            plt.clf()
+
         return response
     except Exception as e:
         return f"Error en el agente CSV: {e}"
@@ -108,7 +99,7 @@ def run_csv_agent_query(query, df, api_key, temperature):
 # ======================
 
 st.title("🚜 Herramienta de Análisis y QA sobre Agricultura")
-st.subheader("Análisis Exploratorio de Datos (EDA) y Comparación de Respuestas")
+st.subheader("Exploración de Datos (EDA) y Comparación de Respuestas")
 
 # --- Sección EDA ---
 st.header("1. Exploración de Datos (EDA) de Agricultura")
@@ -120,18 +111,18 @@ if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         st.success("Archivo cargado exitosamente.")
         st.write("---")
-        
+
         st.subheader("📊 Vista previa de los datos")
         st.dataframe(df.head())
-        
+
         st.subheader("ℹ️ Información del DataFrame")
         buffer = StringIO()
         df.info(buf=buffer)
         st.text(buffer.getvalue())
-        
+
         st.subheader("📈 Estadísticas Descriptivas")
         st.write(df.describe())
-        
+
         st.subheader("📉 Matriz de Correlación")
         numeric_df = df.select_dtypes(include=['number'])
         if not numeric_df.empty:
@@ -142,6 +133,41 @@ if uploaded_file is not None:
             st.pyplot(plt)
         else:
             st.warning("No hay columnas numéricas para calcular la matriz de correlación.")
+
+        # --- NUEVA PARTE: mapa interactivo ---
+        if "lat" in df.columns and "lon" in df.columns:
+            st.subheader("🌍 Mapa de fincas por cultivo")
+            cultivos = df['cultivo'].dropna().unique().tolist()
+            cultivo_sel = st.selectbox("Selecciona un cultivo:", ["Todos"] + cultivos)
+
+            if cultivo_sel != "Todos":
+                df_map = df[df['cultivo'] == cultivo_sel]
+            else:
+                df_map = df
+
+            if not df_map.empty:
+                st.pydeck_chart(pdk.Deck(
+                    map_style="mapbox://styles/mapbox/light-v9",
+                    initial_view_state=pdk.ViewState(
+                        latitude=df_map['lat'].mean(),
+                        longitude=df_map['lon'].mean(),
+                        zoom=6,
+                        pitch=0,
+                    ),
+                    layers=[
+                        pdk.Layer(
+                            "ScatterplotLayer",
+                            data=df_map,
+                            get_position='[lon, lat]',
+                            get_color='[200, 30, 0, 160]',
+                            get_radius=20000,
+                            pickable=True
+                        )
+                    ],
+                    tooltip={"text": "Cultivo: {cultivo}\nRegión: {region}\nRendimiento: {rendimiento_t_ha}"}
+                ))
+            else:
+                st.warning("No hay datos para ese cultivo seleccionado.")
 
     except Exception as e:
         st.error(f"Ocurrió un error al procesar el archivo: {e}")
@@ -179,11 +205,11 @@ if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state and "llm_c
     st.write("---")
     st.header("3. Resultados lado a lado")
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         st.subheader("Sin RAG")
         st.info(st.session_state.llm_no_rag)
-        
+
     with col2:
         st.subheader("Con RAG (Wikipedia)")
         st.info(st.session_state.llm_rag)
