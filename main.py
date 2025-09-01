@@ -24,7 +24,7 @@ groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # Modelo fijo recomendado (Groq)
-MODEL_NAME = "llama-3.1-70b-8192"
+MODEL_NAME = "llama-3.1-70b"   # ✅ nombre correcto
 
 # --- Funciones ---
 
