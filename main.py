@@ -5,8 +5,7 @@ import matplotlib.pyplot as plt
 from io import StringIO
 import concurrent.futures
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.utilities import WikipediaAPIWrapper
 
 # ======================
@@ -41,12 +40,11 @@ def load_llm(api_key, temperature, model_name):
         st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
         return None
     try:
-        llm = ChatGroq(
+        return ChatGroq(
             api_key=api_key,
             model_name=model_name,
             temperature=temperature
         )
-        return llm
     except Exception as e:
         st.error(f"Error al cargar el modelo Groq: {e}")
         return None
@@ -57,13 +55,15 @@ def run_no_rag_query(query, api_key, temperature, model_name):
     llm = load_llm(api_key, temperature, model_name)
     if not llm:
         return "Error: No se pudo cargar el modelo."
-    prompt_template = PromptTemplate(
-        input_variables=["pregunta"],
-        template="Eres un experto en agricultura. Responde de manera concisa a la siguiente pregunta: {pregunta}"
-    )
-    chain = LLMChain(llm=llm, prompt=prompt_template)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Eres un experto en agricultura. Responde de manera concisa."),
+        ("user", "{pregunta}")
+    ])
+
+    chain = prompt | llm
     try:
-        return chain.run({"pregunta": query})   # ✅ FIX
+        return chain.invoke({"pregunta": query}).content
     except Exception as e:
         return f"Error en la ejecución sin RAG: {e}"
 
@@ -77,14 +77,14 @@ def run_rag_query(query, api_key, temperature, model_name):
     try:
         wiki = WikipediaAPIWrapper(top_k_results=2, doc_content_chars_max=1000)
         context = wiki.run(query)
-        enriched_prompt = f"Contexto de Wikipedia:\n{context}\n\nPregunta: {query}\nRespuesta:"
-        
-        prompt_template = PromptTemplate(
-            input_variables=["pregunta"],
-            template="{pregunta}"
-        )
-        chain = LLMChain(llm=llm, prompt=prompt_template)
-        return chain.run({"pregunta": enriched_prompt})   # ✅ FIX
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "Eres un experto en agricultura. Usa el contexto de Wikipedia para responder."),
+            ("user", f"Contexto: {context}\n\nPregunta: {query}")
+        ])
+
+        chain = prompt | llm
+        return chain.invoke({}).content
     except Exception as e:
         return f"Error en RAG: {e}"
 
@@ -95,24 +95,24 @@ def run_csv_query(query, df, api_key, temperature, model_name):
     if not llm:
         return "Error: No se pudo cargar el modelo."
 
-    # Convertimos las primeras filas a texto
     preview = df.head(20).to_string()
 
-    enriched_prompt = f"""
+    context = f"""
     Tienes acceso a un dataset de agricultura con estas columnas: {', '.join(df.columns)}.
     Aquí van las primeras filas como referencia:
     {preview}
-
-    Ahora responde a la pregunta del usuario, usando solo la información del dataset:
-    {query}
     """
 
-    prompt_template = PromptTemplate(
-        input_variables=["pregunta"],
-        template="{pregunta}"
-    )
-    chain = LLMChain(llm=llm, prompt=prompt_template)
-    return chain.run({"pregunta": enriched_prompt})   # ✅ FIX
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Eres un experto en análisis de datos y agricultura."),
+        ("user", f"{context}\n\nPregunta: {query}")
+    ])
+
+    chain = prompt | llm
+    try:
+        return chain.invoke({}).content
+    except Exception as e:
+        return f"Error en CSV Query: {e}"
 
 # ======================
 # App principal
@@ -138,8 +138,7 @@ if uploaded_file is not None:
         st.subheader("ℹ️ Información del DataFrame")
         buffer = StringIO()
         df.info(buf=buffer)
-        s = buffer.getvalue()
-        st.text(s)
+        st.text(buffer.getvalue())
         
         st.subheader("📈 Estadísticas Descriptivas")
         st.write(df.describe())
