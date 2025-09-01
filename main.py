@@ -63,7 +63,7 @@ def run_no_rag_query(query, api_key, temperature, model_name):
     )
     chain = LLMChain(llm=llm, prompt=prompt_template)
     try:
-        return chain.run(query)
+        return chain.run({"pregunta": query})   # ✅ FIX
     except Exception as e:
         return f"Error en la ejecución sin RAG: {e}"
 
@@ -84,7 +84,7 @@ def run_rag_query(query, api_key, temperature, model_name):
             template="{pregunta}"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
-        return chain.run(enriched_prompt)
+        return chain.run({"pregunta": enriched_prompt})   # ✅ FIX
     except Exception as e:
         return f"Error en RAG: {e}"
 
@@ -112,7 +112,7 @@ def run_csv_query(query, df, api_key, temperature, model_name):
         template="{pregunta}"
     )
     chain = LLMChain(llm=llm, prompt=prompt_template)
-    return chain.run(enriched_prompt)
+    return chain.run({"pregunta": enriched_prompt})   # ✅ FIX
 
 # ======================
 # App principal
