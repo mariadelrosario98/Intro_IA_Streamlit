@@ -20,7 +20,7 @@ st.set_page_config(
 
 # --- Sidebar ---
 st.sidebar.title("🛠️ Configuración")
-groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq:", type="password")
+groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):", type="password")
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # --- Funciones ---
