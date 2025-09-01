@@ -3,8 +3,11 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from io import StringIO
-from huggingface_hub import InferenceClient
+from langchain_groq import ChatGroq
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
 from langchain_community.utilities import WikipediaAPIWrapper
+from langchain.agents import initialize_agent, AgentType, Tool
 
 # ======================
 # Configuración de página
@@ -17,35 +20,72 @@ st.set_page_config(
 
 # --- Sidebar ---
 st.sidebar.title("🛠️ Configuración")
-hf_token = st.sidebar.text_input("🔑 Ingresa tu API Key de Hugging Face:", type="password")
+groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq:", type="password")
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # --- Funciones ---
 
-def query_hf_model(hf_token, question, temperature=0.7, model_id="tiiuae/falcon-7b-instruct"):
-    """Consulta directa al modelo Hugging Face con chat_completion."""
-    if not hf_token:
-        return "Error: No se proporcionó token de Hugging Face."
+def load_llm(api_key, temperature):
+    """Inicializa y retorna LLaMA-3 en Groq."""
+    if not api_key:
+        st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
+        return None
     try:
-        client = InferenceClient(model_id, token=hf_token)
-        response = client.chat_completion(
-            messages=[{"role": "user", "content": question}],
-            max_tokens=400,
+        llm = ChatGroq(
+            api_key=api_key,
+            model_name="llama3-8b-8192",  # 🚀 LLaMA-3 de Groq
             temperature=temperature
         )
-        return response.choices[0].message["content"]
+        return llm
     except Exception as e:
-        return f"Error al consultar el modelo: {e}"
+        st.error(f"Error al cargar el modelo Groq: {e}")
+        return None
 
-def run_rag_query(question, hf_token, temperature):
-    """RAG manual: busca contexto en Wikipedia y lo pasa al modelo."""
+
+def run_no_rag_query(query, api_key, temperature):
+    """Ejecuta consulta directa con Groq LLaMA-3 (sin RAG)."""
+    llm = load_llm(api_key, temperature)
+    if not llm:
+        return "Error: No se pudo cargar el modelo."
+    
+    prompt_template = PromptTemplate(
+        input_variables=["pregunta"],
+        template="Eres un experto en agricultura. Responde de manera concisa a la siguiente pregunta: {pregunta}"
+    )
+    chain = LLMChain(llm=llm, prompt=prompt_template)
+    
     try:
-        wiki = WikipediaAPIWrapper()
-        context = wiki.run(question)
-        enriched_prompt = f"Contexto de Wikipedia:\n{context}\n\nPregunta: {question}\nRespuesta:"
-        return query_hf_model(hf_token, enriched_prompt, temperature)
+        return chain.run(query)
     except Exception as e:
-        return f"Error en RAG: {e}"
+        return f"Error en la ejecución del modelo sin RAG: {e}"
+
+
+def run_rag_query(query, api_key, temperature):
+    """Ejecuta una consulta con RAG usando Wikipedia como fuente."""
+    llm = load_llm(api_key, temperature)
+    if not llm:
+        return "Error: No se pudo cargar el modelo para RAG."
+
+    wikipedia_tool = WikipediaAPIWrapper()
+    tools = [Tool(
+        name="Wikipedia",
+        func=wikipedia_tool.run,
+        description="Útil para buscar información en Wikipedia."
+    )]
+
+    agent = initialize_agent(
+        tools,
+        llm,
+        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+        handle_parsing_errors=True,
+        verbose=False
+    )
+    
+    try:
+        response = agent.run(f"Responde la siguiente pregunta sobre agricultura, usando solo fuentes de Wikipedia: {query}")
+        return response
+    except Exception as e:
+        return f"Error en la ejecución del agente RAG: {e}"
 
 # ======================
 # App principal
@@ -104,14 +144,14 @@ st.info("Este agente solo responde preguntas relacionadas con la agricultura. No
 user_question = st.text_area("Haz una pregunta sobre agricultura:", "ej: ¿Cuáles son los beneficios de la rotación de cultivos?")
 
 if st.button("Obtener Respuesta"):
-    if not hf_token:
-        st.warning("Por favor, ingresa tu API Key de Hugging Face en el sidebar para continuar.")
+    if not groq_api_key:
+        st.warning("Por favor, ingresa tu API Key de Groq en el sidebar para continuar.")
     else:
         with st.spinner("Generando respuesta sin RAG..."):
-            response_no_rag = query_hf_model(hf_token, user_question, temperature)
+            response_no_rag = run_no_rag_query(user_question, groq_api_key, temperature)
 
         with st.spinner("Generando respuesta con RAG..."):
-            response_rag = run_rag_query(user_question, hf_token, temperature)
+            response_rag = run_rag_query(user_question, groq_api_key, temperature)
 
         st.session_state.llm_no_rag = response_no_rag
         st.session_state.llm_rag = response_rag
@@ -125,9 +165,7 @@ if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state:
     with tab1:
         st.subheader("Respuesta sin RAG (solo el modelo)")
         st.info(st.session_state.llm_no_rag)
-        st.write("Respuesta generada directamente por el modelo con la información de entrenamiento.")
-
+        
     with tab2:
         st.subheader("Respuesta con RAG (fuente externa)")
         st.info(st.session_state.llm_rag)
-        st.write("Respuesta enriquecida con contexto de Wikipedia mediante **RAG** (Recuperación + Generación).")
