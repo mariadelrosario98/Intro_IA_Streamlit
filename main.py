@@ -21,19 +21,33 @@ st.set_page_config(
 # --- Sidebar ---
 st.sidebar.title("🛠️ Configuración")
 groq_api_key = st.sidebar.text_input("🔑 Ingresa tu API Key de Groq (gsk_...):", type="password")
+
+model_name = st.sidebar.selectbox(
+    "Selecciona el modelo LLaMA-3.x (todos gratis en Groq):",
+    [
+        "llama-3.1-8b-instant",
+        "llama-3.1-70b",
+        "llama-3.2-1b",
+        "llama-3.2-3b",
+        "llama-3.2-11b",
+        "llama-3.2-90b"
+    ],
+    index=0
+)
+
 temperature = st.sidebar.slider("Temperatura del Modelo", 0.0, 1.0, 0.7, 0.1)
 
 # --- Funciones ---
 
-def load_llm(api_key, temperature):
-    """Inicializa y retorna LLaMA-3 en Groq."""
+def load_llm(api_key, temperature, model_name):
+    """Inicializa y retorna un modelo LLaMA-3.x en Groq."""
     if not api_key:
         st.error("Por favor, ingresa tu API Key de Groq en el sidebar.")
         return None
     try:
         llm = ChatGroq(
             api_key=api_key,
-            model_name="llama3-8b-8192",  # 🚀 LLaMA-3 de Groq
+            model_name=model_name,
             temperature=temperature
         )
         return llm
@@ -42,9 +56,9 @@ def load_llm(api_key, temperature):
         return None
 
 
-def run_no_rag_query(query, api_key, temperature):
-    """Ejecuta consulta directa con Groq LLaMA-3 (sin RAG)."""
-    llm = load_llm(api_key, temperature)
+def run_no_rag_query(query, api_key, temperature, model_name):
+    """Ejecuta consulta directa con Groq LLaMA-3.x (sin RAG)."""
+    llm = load_llm(api_key, temperature, model_name)
     if not llm:
         return "Error: No se pudo cargar el modelo."
     
@@ -60,9 +74,9 @@ def run_no_rag_query(query, api_key, temperature):
         return f"Error en la ejecución del modelo sin RAG: {e}"
 
 
-def run_rag_query(query, api_key, temperature):
+def run_rag_query(query, api_key, temperature, model_name):
     """Ejecuta una consulta con RAG usando Wikipedia como fuente."""
-    llm = load_llm(api_key, temperature)
+    llm = load_llm(api_key, temperature, model_name)
     if not llm:
         return "Error: No se pudo cargar el modelo para RAG."
 
@@ -148,10 +162,10 @@ if st.button("Obtener Respuesta"):
         st.warning("Por favor, ingresa tu API Key de Groq en el sidebar para continuar.")
     else:
         with st.spinner("Generando respuesta sin RAG..."):
-            response_no_rag = run_no_rag_query(user_question, groq_api_key, temperature)
+            response_no_rag = run_no_rag_query(user_question, groq_api_key, temperature, model_name)
 
         with st.spinner("Generando respuesta con RAG..."):
-            response_rag = run_rag_query(user_question, groq_api_key, temperature)
+            response_rag = run_rag_query(user_question, groq_api_key, temperature, model_name)
 
         st.session_state.llm_no_rag = response_no_rag
         st.session_state.llm_rag = response_rag
