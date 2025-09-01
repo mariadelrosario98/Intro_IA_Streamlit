@@ -237,7 +237,7 @@ if "llm_no_rag" in st.session_state and "llm_rag" in st.session_state and "llm_c
         st.info(st.session_state.llm_no_rag)
         
     with col2:
-        st.subheader("Con RAG (Wikipedia)")
+        st.subheader("Con RAG)")
         st.info(st.session_state.llm_rag)
 
     with col3:
