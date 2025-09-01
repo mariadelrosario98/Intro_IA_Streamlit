@@ -148,12 +148,24 @@ if uploaded_file is not None:
             df_map = df if cultivo_sel == "Todos" else df[df['cultivo'] == cultivo_sel]
 
             if not df_map.empty:
+                # Forzar centro en Colombia si hay valores inválidos
+                try:
+                    lat_center = df_map[lat_col].mean()
+                    lon_center = df_map[lon_col].mean()
+                    if pd.isna(lat_center) or pd.isna(lon_center):
+                        lat_center, lon_center = 4.5709, -74.2973
+                except Exception:
+                    lat_center, lon_center = 4.5709, -74.2973
+
+                # Colores distintos por cultivo
+                df_map["color"] = df_map["cultivo"].astype("category").cat.codes * 40 + 60
+
                 st.pydeck_chart(pdk.Deck(
-                    map_style="mapbox://styles/mapbox/light-v9",
+                    map_style=None,  # ✅ usa OpenStreetMap (sin token externo)
                     initial_view_state=pdk.ViewState(
-                        latitude=df_map[lat_col].mean() if not df_map.empty else 4.5709,
-                        longitude=df_map[lon_col].mean() if not df_map.empty else -74.2973,
-                        zoom=6,
+                        latitude=lat_center,
+                        longitude=lon_center,
+                        zoom=5,  # 🔥 zoom nacional
                         pitch=0,
                     ),
                     layers=[
@@ -161,16 +173,22 @@ if uploaded_file is not None:
                             "ScatterplotLayer",
                             data=df_map,
                             get_position=f'[{lon_col}, {lat_col}]',
-                            get_color='[200, 30, 0, 160]',
+                            get_color='[color, 100, 200]',
                             get_radius=20000,
                             pickable=True
                         )
                     ],
-                    tooltip={"text": "Cultivo: {cultivo}\nRegión: {region}\nRendimiento: {rendimiento_t_ha}"}
-                    if "region" in df.columns else {"text": "Cultivo: {cultivo}"}
+                    tooltip={
+                        "html": "<b>Cultivo:</b> {cultivo}<br/>"
+                                + ("<b>Región:</b> {region}<br/>" if "region" in df.columns else "")
+                                + "<b>Rendimiento:</b> {rendimiento_t_ha}",
+                        "style": {"color": "white"}
+                    }
                 ))
             else:
                 st.warning("No hay datos para ese cultivo seleccionado.")
+        else:
+            st.warning("⚠️ No se encontraron columnas de lat/lon en el CSV.")
 
     except Exception as e:
         st.error(f"Ocurrió un error al procesar el archivo: {e}")
